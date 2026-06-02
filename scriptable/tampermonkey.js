@@ -17,24 +17,7 @@
   'use strict';
 
   // ── CONFIG ─────────────────────────────────────────────────────────────────
-  // On first run, you'll be prompted to enter your tracker URL.
-  // Local testing: http://localhost:8000
-  // After deploying to Render: https://bitget-tracker.onrender.com
-  let TRACKER_URL = GM_getValue('tracker_url', '');
-  if (!TRACKER_URL) {
-    TRACKER_URL = prompt(
-      'Bitget Tracker Setup\n\nEnter your tracker URL:',
-      'https://bitget-tracker.onrender.com'
-    );
-    if (TRACKER_URL) {
-      TRACKER_URL = TRACKER_URL.replace(/\/$/, '');
-      GM_setValue('tracker_url', TRACKER_URL);
-      alert('Saved! URL set to: ' + TRACKER_URL);
-    } else {
-      console.warn('[Bitget Tracker] No URL set — script disabled.');
-      return;
-    }
-  }
+  const TRACKER_URL = 'https://bitget-tracker.onrender.com';
 
   const MT5_ENDPOINTS = [
     '/v1/trace/mt5/data/tracePosition',
@@ -58,20 +41,19 @@
     const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
     const promise = _origFetch.apply(this, args);
 
-    if (url.includes('/v1/trace/mt5/data/tracePosition')) {
+    if (url.includes('/v1/trace/mt5/')) {
       promise.then(r => r.clone().json()).then(data => {
-        console.log('[Bitget Tracker] captured positions');
-        pushToTracker('positions', data);
-      }).catch(() => {});
-    } else if (url.includes('/v1/trace/mt5/trace/positionHistory')) {
-      promise.then(r => r.clone().json()).then(data => {
-        console.log('[Bitget Tracker] captured history');
-        pushToTracker('history', data);
-      }).catch(() => {});
-    } else if (url.includes('/v1/trace/mt5/data/traceBalance')) {
-      promise.then(r => r.clone().json()).then(data => {
-        console.log('[Bitget Tracker] captured balance');
-        pushToTracker('balance', data);
+        // Log ALL mt5 endpoints so we can find the balance one
+        console.log('[Bitget Tracker] mt5 call:', url, JSON.stringify(data).slice(0, 300));
+
+        if (url.includes('/v1/trace/mt5/data/tracePosition')) {
+          pushToTracker('positions', data);
+        } else if (url.includes('/v1/trace/mt5/trace/positionHistory')) {
+          pushToTracker('history', data);
+        } else {
+          // Forward ALL other mt5 responses — one of them has the balance
+          pushToTracker('balance_candidate', { url, data });
+        }
       }).catch(() => {});
     }
 
