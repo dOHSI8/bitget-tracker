@@ -134,10 +134,8 @@ async def start_poller(push_fn: Callable):
 
 
 async def _poll_once(push_fn: Callable, cookie_str: str):
-    """Launch browser, grab all data, close browser. ~30s per cycle."""
+    """Launch browser, grab all data via API calls only, close browser."""
     from playwright.async_api import async_playwright
-
-    intercepted = {}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
@@ -153,64 +151,28 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
 
             page = await context.new_page()
 
-            # Block heavy resources
+            # Block ALL non-essential resources — we only need fetch() to work
             async def _block(route):
-                if route.request.resource_type in BLOCKED_TYPES:
-                    await route.abort()
-                else:
+                rt = route.request.resource_type
+                if rt in {"document", "xhr", "fetch", "script"}:
                     await route.continue_()
+                else:
+                    await route.abort()
             await page.route("**/*", _block)
 
-            # Intercept ALL API responses during navigation
-            intercepted_urls = []
-            async def on_response(response):
-                url = response.url
-                if "/v1/" not in url:
-                    return
-                try:
-                    data = await response.json()
-                    intercepted_urls.append(url.split("?")[0])
-                    _classify_and_push(url, data, push_fn)
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            # Navigate
+            # Navigate to a lightweight Bitget page (just to establish session)
             logger.info("Poll: launching browser...")
             try:
-                await page.goto(BITGET_PAGE, wait_until="networkidle", timeout=45_000)
+                await page.goto("https://www.bitget.com/about", wait_until="domcontentloaded", timeout=30_000)
             except Exception as e:
                 logger.warning("Navigation timeout (may still work): %s", e)
 
             _status["browser_alive"] = True
             _status["last_error"] = None
-            logger.info("Browser: intercepted %d API calls: %s", len(intercepted_urls), intercepted_urls)
 
-            # Active API polls (fetch from within browser context)
+            # All data via direct fetch() calls
             await _active_poll(page, push_fn)
-
-            # Try to fetch copy trading detail directly (balance source)
-            for ep in [
-                f"/v1/trace/mt5/trace/traceDetail?portfolioId={PORTFOLIO_ID}",
-                f"/v1/trace/mt5/data/copyDetail?portfolioId={PORTFOLIO_ID}",
-                f"/v1/trace/mt5/data/accountInfo?portfolioId={PORTFOLIO_ID}",
-            ]:
-                try:
-                    detail = await page.evaluate("""async (ep) => {
-                        const r = await fetch(ep, { credentials: 'include' });
-                        return r.ok ? await r.json() : null;
-                    }""", ep)
-                    if detail:
-                        d = detail.get("data", detail) if isinstance(detail, dict) else detail
-                        if isinstance(d, dict):
-                            has_bal = any(k for k in d if "balance" in k.lower() or "equity" in k.lower())
-                            if has_bal:
-                                logger.info("Browser: fetched balance from %s", ep)
-                                push_fn("copy_details", d)
-                                break
-                except Exception:
-                    pass
+            await _fetch_balance(page, push_fn)
 
             logger.info("Poll cycle complete — closing browser")
 
@@ -304,48 +266,83 @@ async def _active_poll(page, push_fn: Callable):
     _status["polls"] += 1
 
 
-async def _scrape_copy_details(page, push_fn: Callable):
-    try:
-        page_text = await page.evaluate("() => (document.body?.innerText || '').slice(0, 1000)")
-        _status["last_page_text"] = page_text
-    except Exception as e:
-        logger.warning("Page text capture error: %s", e)
+async def _fetch_balance(page, push_fn: Callable):
+    """Try multiple endpoints to find balance/equity data."""
 
-    try:
-        details = await page.evaluate("""() => {
-            const text = document.body?.innerText || '';
-            const balMatch = text.match(/Total\\s*balance\\s*\\(?USDT\\)?\\s*[\\n\\r]*\\s*([\\d,]+\\.?\\d*)/i);
-            const eqMatch = text.match(/Total\\s*equity\\s*\\(?USDT\\)?\\s*[\\n\\r]*\\s*([\\d,]+\\.?\\d*)/i);
-            const bal = balMatch ? parseFloat(balMatch[1].replace(/,/g, '')) : 0;
-            const eq = eqMatch ? parseFloat(eqMatch[1].replace(/,/g, '')) : 0;
-            const value = bal || eq;
+    # GET endpoints
+    get_eps = [
+        f"/v1/trace/mt5/trace/traceDetail?portfolioId={PORTFOLIO_ID}",
+        f"/v1/trace/mt5/data/copyDetail?portfolioId={PORTFOLIO_ID}",
+        f"/v1/trace/mt5/data/accountInfo?portfolioId={PORTFOLIO_ID}",
+        f"/v1/trace/mt5/account/balance?portfolioId={PORTFOLIO_ID}",
+        f"/v1/trace/mt5/data/followerDetail?portfolioId={PORTFOLIO_ID}",
+        f"/v1/trace/mt5/trace/followerDetail?portfolioId={PORTFOLIO_ID}",
+        f"/v1/trace/mt5/data/traceInfo?portfolioId={PORTFOLIO_ID}",
+    ]
+    for ep in get_eps:
+        try:
+            result = await page.evaluate("""async (ep) => {
+                const r = await fetch(ep, { credentials: 'include' });
+                if (!r.ok) return { _status: r.status, _url: ep };
+                return await r.json();
+            }""", ep)
+            if result and isinstance(result, dict):
+                status_code = result.get("_status")
+                if status_code:
+                    logger.info("Balance GET %s → %s", ep.split("?")[0].split("/")[-1], status_code)
+                    continue
+                d = result.get("data", result)
+                if isinstance(d, dict):
+                    has_bal = any(k for k in d if "balance" in k.lower() or "equity" in k.lower())
+                    if has_bal:
+                        logger.info("Browser: found balance via GET %s", ep)
+                        push_fn("copy_details", d)
+                        _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+                        _status["scrapes"] += 1
+                        return
+                    logger.info("Balance GET %s → keys: %s", ep.split("?")[0].split("/")[-1], list(d.keys())[:10])
+        except Exception as e:
+            logger.warning("Balance GET %s error: %s", ep.split("?")[0].split("/")[-1], e)
 
-            const netMatch = text.match(/Est\\.?\\s*net\\s*profit\\s*\\(?USDT\\)?\\s*[\\n\\r]*\\s*[+\\-]?([\\d,]+\\.?\\d*)/i);
-            const realMatch = text.match(/(?<![Uu]n)(?:^|[^a-zA-Z])[Rr]ealized\\s*PnL\\s*\\(?USDT\\)?\\s*[\\n\\r]*\\s*[+\\-]?([\\d,]+\\.?\\d*)/);
-            const unrealMatch = text.match(/Unrealized\\s*PnL\\s*\\(?USDT\\)?\\s*[\\n\\r]*\\s*[+\\-]?([\\d,]+\\.?\\d*)/i);
+    # POST endpoints
+    post_eps = [
+        "/v1/trace/mt5/trace/traceDetail",
+        "/v1/trace/mt5/data/copyDetail",
+        "/v1/trace/mt5/data/followerDetail",
+        "/v1/trace/mt5/trace/followerDetail",
+        "/v1/trace/mt5/data/accountInfo",
+        "/v1/trace/mt5/account/balance",
+    ]
+    for ep in post_eps:
+        try:
+            result = await page.evaluate("""async ([ep, pid]) => {
+                const r = await fetch(ep, {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ portfolioId: pid }),
+                });
+                if (!r.ok) return { _status: r.status, _url: ep };
+                return await r.json();
+            }""", [ep, PORTFOLIO_ID])
+            if result and isinstance(result, dict):
+                status_code = result.get("_status")
+                if status_code:
+                    logger.info("Balance POST %s → %s", ep.split("/")[-1], status_code)
+                    continue
+                d = result.get("data", result)
+                if isinstance(d, dict):
+                    has_bal = any(k for k in d if "balance" in k.lower() or "equity" in k.lower())
+                    if has_bal:
+                        logger.info("Browser: found balance via POST %s", ep)
+                        push_fn("copy_details", d)
+                        _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+                        _status["scrapes"] += 1
+                        return
+                    logger.info("Balance POST %s → keys: %s", ep.split("/")[-1], list(d.keys())[:10])
+        except Exception as e:
+            logger.warning("Balance POST %s error: %s", ep.split("/")[-1], e)
 
-            const netProfit = netMatch ? parseFloat(netMatch[1].replace(/,/g, '')) : null;
-            const realPnl = realMatch ? parseFloat(realMatch[1].replace(/,/g, '')) : null;
-            const unrealPnl = unrealMatch ? parseFloat(unrealMatch[1].replace(/,/g, '')) : null;
-
-            const netSign = netMatch && text.match(/Est\\.?\\s*net\\s*profit\\s*\\(?USDT\\)?\\s*[\\n\\r]*\\s*-/) ? -1 : 1;
-            const realSign = realMatch && text.match(/(?<![Uu]n)(?:^|[^a-zA-Z])[Rr]ealized\\s*PnL\\s*\\(?USDT\\)?\\s*[\\n\\r]*\\s*-/) ? -1 : 1;
-
-            if (value <= 0 && netProfit === null) return null;
-            const result = { totalBalance: value, totalEquity: eq || value };
-            if (netProfit !== null) result.estNetProfit = netProfit * netSign;
-            if (realPnl !== null) result.realizedPnl = realPnl * realSign;
-            if (unrealPnl !== null) result.unrealizedPnl = unrealPnl;
-            return result;
-        }""")
-        if details:
-            logger.info("Browser: DOM scraped copy_details")
-            push_fn("copy_details", details)
-    except Exception as e:
-        logger.warning("Scrape copy_details error: %s", e)
-
-    _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
-    _status["scrapes"] += 1
+    logger.warning("Browser: no balance endpoint found")
 
 
 async def _click_tab(page, tab_name: str):
