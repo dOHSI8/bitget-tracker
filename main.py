@@ -85,6 +85,16 @@ def _push_data(kind: str, data):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Restore cookie from env var if file was wiped by redeploy
+    env_cookie = os.environ.get("BITGET_COOKIE", "")
+    cookie_path = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
+    if env_cookie and not cookie_path.exists():
+        cookie_path.write_text(json.dumps({
+            "cookie": env_cookie,
+            "updated": "from-env-var",
+        }))
+        logger.info("Restored cookie from BITGET_COOKIE env var (%d chars)", len(env_cookie))
+
     from browser_poller import start_poller
     task = asyncio.create_task(start_poller(_push_data))
     yield
@@ -112,7 +122,10 @@ def _load_settings() -> dict:
             return json.loads(SETTINGS_FILE.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return {"balance": 0.0, "investment": 0.0}
+    return {
+        "balance": float(os.environ.get("INIT_BALANCE", "0")),
+        "investment": float(os.environ.get("INIT_INVESTMENT", "0")),
+    }
 
 
 def _save_settings(s: dict) -> None:

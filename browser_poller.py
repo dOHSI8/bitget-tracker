@@ -24,10 +24,12 @@ def _load_cookie_string() -> str:
     if COOKIES_FILE.exists():
         try:
             data = json.loads(COOKIES_FILE.read_text())
-            return data.get("cookie", "")
+            val = data.get("cookie", "")
+            if val:
+                return val
         except (json.JSONDecodeError, OSError):
             pass
-    return ""
+    return os.environ.get("BITGET_COOKIE", "")
 
 
 def _parse_cookie_string(cookie_str: str) -> list[dict]:
