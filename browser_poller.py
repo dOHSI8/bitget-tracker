@@ -91,11 +91,12 @@ async def start_poller(push_fn: Callable):
         return
 
     while True:
+        _status["last_error"] = None
         try:
             await _run_browser_session(push_fn, cookie_str)
         except Exception as e:
             logger.error("Browser session crashed: %s", e)
-            _status["last_error"] = str(e)
+            _status["last_error"] = f"Browser crashed: {e}"
             _status["browser_alive"] = False
 
         cookie_str = _load_cookie_string()
@@ -122,24 +123,33 @@ async def _run_browser_session(push_fn: Callable, cookie_str: str):
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--single-process",
+                "--no-zygote",
                 "--disable-extensions",
                 "--disable-background-networking",
                 "--disable-default-apps",
                 "--disable-sync",
                 "--disable-translate",
                 "--no-first-run",
-                "--no-zygote",
                 "--mute-audio",
                 "--disable-hang-monitor",
                 "--disable-client-side-phishing-detection",
                 "--disable-component-update",
                 "--disable-domain-reliability",
-                "--js-flags=--max-old-space-size=256",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-ipc-flooding-protection",
+                "--disable-features=TranslateUI,site-per-process,NetworkService",
+                "--renderer-process-limit=1",
+                "--js-flags=--max-old-space-size=128",
+                "--disable-canvas-aa",
+                "--disable-2d-canvas-clip-aa",
+                "--disable-software-rasterizer",
+                "--disable-accelerated-2d-canvas",
             ],
         )
 
         context = await browser.new_context(
-            viewport={"width": 1280, "height": 900},
+            viewport={"width": 800, "height": 600},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         )
 
@@ -149,6 +159,15 @@ async def _run_browser_session(push_fn: Callable, cookie_str: str):
             logger.info("Injected %d cookies", len(cookies))
 
         page = await context.new_page()
+
+        # Block heavy resources to save memory
+        BLOCKED_TYPES = {"image", "media", "font", "stylesheet"}
+        async def _block_resources(route):
+            if route.request.resource_type in BLOCKED_TYPES:
+                await route.abort()
+            else:
+                await route.continue_()
+        await page.route("**/*", _block_resources)
 
         # Intercept API responses
         async def on_response(response):
