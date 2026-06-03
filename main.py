@@ -460,7 +460,7 @@ async def _do_poll():
     headers = _bitget_headers()
     body_base = {"portfolioId": PORTFOLIO_ID}
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         # Positions
         try:
             r = await client.post(
@@ -468,10 +468,19 @@ async def _do_poll():
                 headers=headers, json=body_base,
             )
             if r.status_code == 200:
-                data = r.json()
+                try:
+                    data = r.json()
+                except Exception:
+                    logger.warning("Poll positions: non-JSON response (%d): %s", r.status_code, r.text[:200])
+                    _poll_status["last_error"] = f"Bitget returned non-JSON (status {r.status_code}). Cookie may be expired."
+                    return
                 _mt5["positions_raw"] = data
                 _mt5["pushed_at"] = datetime.now(BKK).strftime("%H:%M")
                 logger.info("Poll: captured positions")
+            else:
+                logger.warning("Poll positions: status %d", r.status_code)
+                _poll_status["last_error"] = f"Bitget returned status {r.status_code}"
+                return
         except Exception as e:
             logger.warning("Poll positions error: %s", e)
 
@@ -482,8 +491,11 @@ async def _do_poll():
                 headers=headers, json={**body_base, "pageNo": 1, "pageSize": 50},
             )
             if r.status_code == 200:
-                _mt5["history_raw"] = r.json()
-                logger.info("Poll: captured history")
+                try:
+                    _mt5["history_raw"] = r.json()
+                    logger.info("Poll: captured history")
+                except Exception:
+                    logger.warning("Poll history: non-JSON response")
         except Exception as e:
             logger.warning("Poll history error: %s", e)
 
@@ -574,12 +586,22 @@ async def test_poller():
         return {"ok": False, "error": "No cookie set. Paste your Bitget cookie first."}
     headers = _bitget_headers()
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             r = await client.post(
                 f"{BITGET_BASE}/v1/trace/mt5/data/tracePosition",
                 headers=headers, json={"portfolioId": PORTFOLIO_ID},
             )
-            data = r.json()
+            raw = r.text[:500]
+            try:
+                data = r.json()
+            except Exception:
+                return {
+                    "ok": False,
+                    "status": r.status_code,
+                    "error": f"Non-JSON response (status {r.status_code})",
+                    "response_preview": raw,
+                    "headers": dict(r.headers),
+                }
             positions = _extract_positions(data)
             return {
                 "ok": r.status_code == 200,

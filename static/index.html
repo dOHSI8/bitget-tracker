@@ -607,7 +607,12 @@
         updatePollerBar();
       }, 1500);
     } else {
-      cookieStatus.innerHTML = '<span class="red">Failed: ' + (test.error || 'status ' + test.status) + '. Check your cookie.</span>';
+      let msg = test.error || 'status ' + test.status;
+      if (test.response_preview) {
+        const preview = test.response_preview.slice(0, 150).replace(/</g, '&lt;');
+        msg += '<br><span style="font-size:11px;color:var(--muted);word-break:break-all">Response: ' + preview + '...</span>';
+      }
+      cookieStatus.innerHTML = '<span class="red">Failed: ' + msg + '</span>';
     }
   });
 
