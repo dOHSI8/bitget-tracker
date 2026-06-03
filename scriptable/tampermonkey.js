@@ -231,14 +231,45 @@
     }
   }
 
+  // ── Auto-click tabs to load all data ────────────────────────────────────
+  function clickTab(tabName) {
+    const tabs = document.querySelectorAll('[role="tab"], [class*="tab"], [class*="Tab"], button, span, div');
+    for (const el of tabs) {
+      const text = (el.innerText || '').trim();
+      if (text === tabName || text.toLowerCase() === tabName.toLowerCase()) {
+        el.click();
+        console.log('[Bitget Tracker] clicked tab:', tabName);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function autoTabCycle() {
+    // 10s after load: click "Balance history" to load that data
+    setTimeout(() => {
+      clickTab('Balance history');
+      scrapeCopyDetails();
+
+      // 10s later: click back to "Positions" for live tracking
+      setTimeout(() => {
+        clickTab('Positions');
+        scrapeCopyDetails();
+      }, 10_000);
+    }, 10_000);
+  }
+
   // Start polling after page load
   window.addEventListener('load', () => {
     activePoll();
     setInterval(activePoll, 60_000);
 
-    // Scrape DOM every 30s (catches balance that doesn't come via API)
+    // Scrape DOM every 30s
     setTimeout(scrapeCopyDetails, 5_000);
     setInterval(scrapeCopyDetails, 30_000);
+
+    // Auto-cycle tabs: Balance history → Positions
+    autoTabCycle();
   });
 
   console.log('[Bitget Tracker] v2.0 loaded — pushing to', TRACKER_URL);
