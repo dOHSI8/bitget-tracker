@@ -185,9 +185,8 @@ def _rebuild_summary() -> None:
     )
     trades_pnl = sum(t["pnl"] for t in trades)
     # Prefer scraped Realized PnL from Bitget page (accurate), fall back to trades sum
-    all_time_pnl = _settings.get("realized_pnl", None)
-    if all_time_pnl is None:
-        all_time_pnl = trades_pnl
+    scraped_pnl = _settings.get("realized_pnl", 0.0)
+    all_time_pnl = scraped_pnl if scraped_pnl != 0.0 else trades_pnl
 
     _mt5["summary"] = {
         "daily_pnl": round(daily_pnl, 4),

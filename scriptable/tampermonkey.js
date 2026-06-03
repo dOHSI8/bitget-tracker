@@ -209,7 +209,7 @@
 
     // Look for Est.net profit, Realized PnL, Unrealized PnL
     const netMatch = text.match(/Est\.?\s*net\s*profit\s*\(?USDT\)?\s*[\n\r]*\s*[+\-]?([\d,]+\.?\d*)/i);
-    const realMatch = text.match(/Realized\s*PnL\s*\(?USDT\)?\s*[\n\r]*\s*[+\-]?([\d,]+\.?\d*)/i);
+    const realMatch = text.match(/(?<![Uu]n)(?:^|[^a-zA-Z])[Rr]ealized\s*PnL\s*\(?USDT\)?\s*[\n\r]*\s*[+\-]?([\d,]+\.?\d*)/);
     const unrealMatch = text.match(/Unrealized\s*PnL\s*\(?USDT\)?\s*[\n\r]*\s*[+\-]?([\d,]+\.?\d*)/i);
 
     const netProfit = netMatch ? parseFloat(netMatch[1].replace(/,/g, '')) : null;
@@ -218,7 +218,7 @@
 
     // Check sign (look for - before the number)
     const netSign = netMatch && text.match(/Est\.?\s*net\s*profit\s*\(?USDT\)?\s*[\n\r]*\s*-/) ? -1 : 1;
-    const realSign = realMatch && text.match(/Realized\s*PnL\s*\(?USDT\)?\s*[\n\r]*\s*-/) ? -1 : 1;
+    const realSign = realMatch && text.match(/(?<![Uu]n)(?:^|[^a-zA-Z])[Rr]ealized\s*PnL\s*\(?USDT\)?\s*[\n\r]*\s*-/) ? -1 : 1;
 
     if (value > 0 || netProfit !== null) {
       const details = { totalBalance: value, totalEquity: eq || value };
