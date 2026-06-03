@@ -250,16 +250,19 @@
   }
 
   function autoTabCycle() {
-    // 10s after load: click "Balance history" to load that data
+    // 10s after load: click "Balance history"
     setTimeout(() => {
       clickTab('Balance history');
-      scrapeCopyDetails();
 
-      // 10s later: click back to "Positions" for live tracking
+      // Wait 5s for content to render, THEN scrape
       setTimeout(() => {
-        clickTab('Positions');
         scrapeCopyDetails();
-      }, 10_000);
+
+        // 5s later: click back to "Positions" for live tracking
+        setTimeout(() => {
+          clickTab('Positions');
+        }, 5_000);
+      }, 5_000);
     }, 10_000);
   }
 
