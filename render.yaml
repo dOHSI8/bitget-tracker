@@ -1,7 +1,12 @@
 services:
   - type: web
     name: bitget-tracker
-    env: python
-    runtime: python3.12
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    plan: free
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: PORTFOLIO_ID
+        value: "1443199880395776000"
+      - key: POLL_INTERVAL_SEC
+        value: "60"

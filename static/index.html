@@ -294,7 +294,7 @@
     <div id="cookie-status" style="font-size:12px;margin-bottom:12px;display:none"></div>
     <div class="modal-actions">
       <button class="btn-cancel" id="cookie-cancel">Cancel</button>
-      <button class="btn-save" id="cookie-test">Test & Save</button>
+      <button class="btn-save" id="cookie-test">Save</button>
     </div>
   </div>
 </div>
@@ -590,29 +590,23 @@
       return;
     }
     cookieStatus.style.display = 'block';
-    cookieStatus.innerHTML = '<span style="color:var(--muted)">Saving & testing...</span>';
+    cookieStatus.innerHTML = '<span style="color:var(--muted)">Saving cookie...</span>';
 
-    await fetch('/api/poller/cookie', {
+    const res = await fetch('/api/poller/cookie', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cookie: raw }),
-    });
+    }).then(r => r.json());
 
-    const test = await fetch('/api/poller/test').then(r => r.json());
-    if (test.ok && test.positions_found >= 0) {
-      cookieStatus.innerHTML = '<span class="green">Connected! Found ' + test.positions_found + ' positions. Polling active.</span>';
+    if (res.ok) {
+      cookieStatus.innerHTML = '<span class="green">Cookie saved! Browser will connect within ~15 seconds.</span>';
       setTimeout(() => {
         cookieModal.classList.remove('active');
         fetchData();
         updatePollerBar();
-      }, 1500);
+      }, 2000);
     } else {
-      let msg = test.error || 'status ' + test.status;
-      if (test.response_preview) {
-        const preview = test.response_preview.slice(0, 150).replace(/</g, '&lt;');
-        msg += '<br><span style="font-size:11px;color:var(--muted);word-break:break-all">Response: ' + preview + '...</span>';
-      }
-      cookieStatus.innerHTML = '<span class="red">Failed: ' + msg + '</span>';
+      cookieStatus.innerHTML = '<span class="red">Error: ' + (res.error || 'unknown') + '</span>';
     }
   });
 
@@ -627,16 +621,20 @@
 
       if (!s.has_cookie) {
         dot.style.background = 'var(--amber)';
-        text.textContent = 'Poller: no cookie set';
+        text.textContent = 'Browser: no cookie set';
         last.textContent = 'tap to set up';
       } else if (s.last_error) {
         dot.style.background = 'var(--red)';
-        text.textContent = 'Poller: error';
-        last.textContent = s.last_error.slice(0, 40);
-      } else {
+        text.textContent = 'Browser: error';
+        last.textContent = s.last_error.slice(0, 50);
+      } else if (s.browser_alive) {
         dot.style.background = 'var(--green)';
-        text.textContent = 'Poller: active (' + s.polls + ' polls)';
+        text.textContent = 'Browser: live (' + s.polls + ' polls)';
         last.textContent = s.last_poll ? 'Last: ' + s.last_poll.split(' ')[1] : '';
+      } else {
+        dot.style.background = 'var(--amber)';
+        text.textContent = 'Browser: starting...';
+        last.textContent = '';
       }
     } catch (_) {}
   }

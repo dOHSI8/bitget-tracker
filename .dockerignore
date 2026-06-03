@@ -1,0 +1,9 @@
+.git
+__pycache__
+*.pyc
+.env
+settings.json
+cookies.json
+headless/node_modules
+headless/browser-data
+.venv

@@ -6,7 +6,6 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -19,9 +18,75 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _push_data(kind: str, data):
+    """Shared push handler used by both HTTP endpoint and browser poller."""
+    global _settings
+    if kind == "positions":
+        _mt5["positions_raw"] = data
+        _mt5["pushed_at"] = datetime.now(BKK).strftime("%H:%M")
+    elif kind == "history":
+        _mt5["history_raw"] = data
+    elif kind == "copy_details":
+        if isinstance(data, dict):
+            changed = False
+            for key in list(data.keys()):
+                if any(pat in key.lower() for pat in ("balance", "equity", "totalbal", "totalequity")):
+                    try:
+                        val = round(float(data[key]), 2)
+                        if val > 0:
+                            _settings["balance"] = val
+                            changed = True
+                            logger.info("Auto-updated balance=%.2f from key=%s", val, key)
+                            break
+                    except (TypeError, ValueError):
+                        pass
+            for key in ("estNetProfit", "est_net_profit", "netProfit"):
+                if key in data:
+                    try:
+                        val = round(float(data[key]), 2)
+                        _settings["all_time_pnl"] = val
+                        changed = True
+                        break
+                    except (TypeError, ValueError):
+                        pass
+            for key in ("realizedPnl", "realized_pnl", "realPnl"):
+                if key in data:
+                    try:
+                        _settings["realized_pnl"] = round(float(data[key]), 2)
+                        changed = True
+                    except (TypeError, ValueError):
+                        pass
+            if changed:
+                _save_settings(_settings)
+    elif kind == "balance_history":
+        rows = []
+        if isinstance(data, dict):
+            rows = data.get("rows") or data.get("list") or data.get("data") or []
+        elif isinstance(data, list):
+            rows = data
+        if rows:
+            _mt5["balance_history_raw"] = rows
+            inv = _calc_investment(rows)
+            _settings["investment"] = inv
+            _save_settings(_settings)
+            logger.info("Auto-updated investment=%.2f from %d rows", inv, len(rows))
+    elif kind == "balance":
+        _mt5["balance_raw"] = data
+    elif kind == "balance_sniff":
+        url = data.get("url", "") if isinstance(data, dict) else ""
+        if "balance_sniffs" not in _mt5:
+            _mt5["balance_sniffs"] = []
+        _mt5["balance_sniffs"].append(data)
+        _mt5["balance_sniffs"] = _mt5["balance_sniffs"][-20:]
+
+    if _mt5["positions_raw"] is not None:
+        _rebuild_summary()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_poll_loop())
+    from browser_poller import start_poller
+    task = asyncio.create_task(start_poller(_push_data))
     yield
     task.cancel()
 
@@ -238,80 +303,8 @@ def _calc_investment(rows: list) -> float:
 
 @app.post("/api/push/mt5")
 async def push_mt5(request: Request):
-    global _settings
     body = await request.json()
-    kind = body.get("kind")
-    data = body.get("data")
-
-    if kind == "positions":
-        _mt5["positions_raw"] = data
-        _mt5["pushed_at"] = datetime.now(BKK).strftime("%H:%M")
-    elif kind == "history":
-        _mt5["history_raw"] = data
-    elif kind == "copy_details":
-        if isinstance(data, dict):
-            changed = False
-            # Extract balance
-            for key in list(data.keys()):
-                if any(pat in key.lower() for pat in ("balance", "equity", "totalbal", "totalequity")):
-                    try:
-                        val = round(float(data[key]), 2)
-                        if val > 0:
-                            _settings["balance"] = val
-                            changed = True
-                            logger.info("Auto-updated balance=%.2f from key=%s", val, key)
-                            break
-                    except (TypeError, ValueError):
-                        pass
-            # Extract Est.net profit → use as all-time PnL
-            for key in ("estNetProfit", "est_net_profit", "netProfit"):
-                if key in data:
-                    try:
-                        val = round(float(data[key]), 2)
-                        _settings["all_time_pnl"] = val
-                        changed = True
-                        logger.info("Auto-updated all_time_pnl=%.2f from key=%s", val, key)
-                        break
-                    except (TypeError, ValueError):
-                        pass
-            # Extract Realized PnL
-            for key in ("realizedPnl", "realized_pnl", "realPnl"):
-                if key in data:
-                    try:
-                        _settings["realized_pnl"] = round(float(data[key]), 2)
-                        changed = True
-                    except (TypeError, ValueError):
-                        pass
-            if changed:
-                _save_settings(_settings)
-            else:
-                logger.info("copy_details received but no usable keys. Keys: %s", list(data.keys()))
-    elif kind == "balance_history":
-        rows = []
-        if isinstance(data, dict):
-            rows = data.get("rows") or data.get("list") or data.get("data") or []
-        elif isinstance(data, list):
-            rows = data
-        if rows:
-            _mt5["balance_history_raw"] = rows
-            inv = _calc_investment(rows)
-            _settings["investment"] = inv
-            _save_settings(_settings)
-            logger.info("Auto-updated investment=%.2f from %d balance_history rows", inv, len(rows))
-    elif kind == "balance":
-        _mt5["balance_raw"] = data
-    elif kind == "balance_sniff":
-        url = data.get("url", "")
-        payload = data.get("data", {})
-        logger.info("SNIFF url=%s data=%s", url, str(payload)[:300])
-        if "balance_sniffs" not in _mt5:
-            _mt5["balance_sniffs"] = []
-        _mt5["balance_sniffs"].append({"url": url, "data": payload})
-        _mt5["balance_sniffs"] = _mt5["balance_sniffs"][-20:]
-
-    if _mt5["positions_raw"] is not None:
-        _rebuild_summary()
-
+    _push_data(body.get("kind"), body.get("data"))
     return {"ok": True}
 
 
@@ -415,203 +408,36 @@ async def get_widget():
     }
 
 
-# ── Server-side Bitget poller ────────────────────────────────────────────────
-
-BITGET_BASE = "https://www.bitget.com"
-PORTFOLIO_ID = os.environ.get("PORTFOLIO_ID", "1443199880395776000")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SEC", "60"))
+# ── Browser poller endpoints ─────────────────────────────────────────────────
 
 COOKIES_FILE = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
 
 
-def _load_cookies() -> str:
-    if COOKIES_FILE.exists():
-        try:
-            data = json.loads(COOKIES_FILE.read_text())
-            return data.get("cookie", "")
-        except (json.JSONDecodeError, OSError):
-            pass
-    return ""
-
-
-def _save_cookies(cookie: str) -> None:
-    COOKIES_FILE.write_text(json.dumps({"cookie": cookie, "updated": datetime.now(BKK).isoformat()}))
-
-
-_poll_cookie: str = _load_cookies()
-_poll_status: dict = {"running": False, "last_poll": None, "last_error": None, "polls": 0}
-
-
-def _bitget_headers() -> dict:
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Content-Type": "application/json",
-        "Referer": f"{BITGET_BASE}/copy-trading/mt5/follower/detail?portfolioId={PORTFOLIO_ID}",
-        "Origin": BITGET_BASE,
-        "Cookie": _poll_cookie,
-    }
-
-
-async def _do_poll():
-    global _poll_status
-    if not _poll_cookie:
-        return
-
-    headers = _bitget_headers()
-    body_base = {"portfolioId": PORTFOLIO_ID}
-
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        # Positions
-        try:
-            r = await client.post(
-                f"{BITGET_BASE}/v1/trace/mt5/data/tracePosition",
-                headers=headers, json=body_base,
-            )
-            if r.status_code == 200:
-                try:
-                    data = r.json()
-                except Exception:
-                    logger.warning("Poll positions: non-JSON response (%d): %s", r.status_code, r.text[:200])
-                    _poll_status["last_error"] = f"Bitget returned non-JSON (status {r.status_code}). Cookie may be expired."
-                    return
-                _mt5["positions_raw"] = data
-                _mt5["pushed_at"] = datetime.now(BKK).strftime("%H:%M")
-                logger.info("Poll: captured positions")
-            else:
-                logger.warning("Poll positions: status %d", r.status_code)
-                _poll_status["last_error"] = f"Bitget returned status {r.status_code}"
-                return
-        except Exception as e:
-            logger.warning("Poll positions error: %s", e)
-
-        # Trade history
-        try:
-            r = await client.post(
-                f"{BITGET_BASE}/v1/trace/mt5/trace/positionHistory",
-                headers=headers, json={**body_base, "pageNo": 1, "pageSize": 50},
-            )
-            if r.status_code == 200:
-                try:
-                    _mt5["history_raw"] = r.json()
-                    logger.info("Poll: captured history")
-                except Exception:
-                    logger.warning("Poll history: non-JSON response")
-        except Exception as e:
-            logger.warning("Poll history error: %s", e)
-
-        # Balance history
-        for ep in [
-            "/v1/trace/mt5/trace/balanceHistory",
-            "/v1/trace/mt5/data/balanceHistory",
-            "/v1/trace/mt5/trace/fundFlow",
-        ]:
-            try:
-                r = await client.post(
-                    f"{BITGET_BASE}{ep}",
-                    headers=headers, json={**body_base, "pageNo": 1, "pageSize": 100},
-                )
-                if r.status_code == 200:
-                    j = r.json()
-                    rows = []
-                    d = j.get("data")
-                    if isinstance(d, dict):
-                        rows = d.get("rows") or d.get("list") or []
-                    elif isinstance(d, list):
-                        rows = d
-                    if rows:
-                        inv = _calc_investment(rows)
-                        _settings["investment"] = inv
-                        _save_settings(_settings)
-                        logger.info("Poll: balance_history from %s, investment=%.2f", ep, inv)
-                        break
-            except Exception:
-                pass
-
-    if _mt5["positions_raw"] is not None:
-        _rebuild_summary()
-
-    _poll_status["last_poll"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
-    _poll_status["last_error"] = None
-    _poll_status["polls"] += 1
-
-
-async def _poll_loop():
-    _poll_status["running"] = True
-    await asyncio.sleep(5)
-    while True:
-        try:
-            await _do_poll()
-        except Exception as e:
-            _poll_status["last_error"] = str(e)
-            logger.error("Poll loop error: %s", e)
-        await asyncio.sleep(POLL_INTERVAL)
-
-
 @app.get("/api/poller")
 async def get_poller_status():
-    return {
-        **_poll_status,
-        "has_cookie": bool(_poll_cookie),
-        "cookie_preview": (_poll_cookie[:40] + "...") if len(_poll_cookie) > 40 else _poll_cookie,
-        "poll_interval_sec": POLL_INTERVAL,
-    }
+    from browser_poller import get_status
+    return get_status()
 
 
 @app.post("/api/poller/cookie")
 async def set_poller_cookie(request: Request):
-    global _poll_cookie
     body = await request.json()
     cookie = body.get("cookie", "").strip()
     if not cookie:
         return {"ok": False, "error": "No cookie provided"}
-    _poll_cookie = cookie
-    _save_cookies(cookie)
+    COOKIES_FILE.write_text(json.dumps({
+        "cookie": cookie,
+        "updated": datetime.now(BKK).isoformat(),
+    }))
     logger.info("Poller cookie updated (%d chars)", len(cookie))
-    asyncio.create_task(_do_poll())
     return {"ok": True, "length": len(cookie)}
 
 
 @app.delete("/api/poller/cookie")
 async def clear_poller_cookie():
-    global _poll_cookie
-    _poll_cookie = ""
     if COOKIES_FILE.exists():
         COOKIES_FILE.unlink()
     return {"ok": True}
-
-
-@app.get("/api/poller/test")
-async def test_poller():
-    if not _poll_cookie:
-        return {"ok": False, "error": "No cookie set. Paste your Bitget cookie first."}
-    headers = _bitget_headers()
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            r = await client.post(
-                f"{BITGET_BASE}/v1/trace/mt5/data/tracePosition",
-                headers=headers, json={"portfolioId": PORTFOLIO_ID},
-            )
-            raw = r.text[:500]
-            try:
-                data = r.json()
-            except Exception:
-                return {
-                    "ok": False,
-                    "status": r.status_code,
-                    "error": f"Non-JSON response (status {r.status_code})",
-                    "response_preview": raw,
-                    "headers": dict(r.headers),
-                }
-            positions = _extract_positions(data)
-            return {
-                "ok": r.status_code == 200,
-                "status": r.status_code,
-                "positions_found": len(positions),
-                "sample": positions[:1] if positions else None,
-                "raw_keys": list(data.keys()) if isinstance(data, dict) else None,
-            }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
