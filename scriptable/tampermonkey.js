@@ -195,10 +195,50 @@
     }
   }
 
+  // ── DOM scraper: read balance & equity directly from the page ────────────
+  function scrapeCopyDetails() {
+    const text = document.body?.innerText || '';
+
+    // Look for "Total balance" or "Total equity" followed by a number
+    const balMatch = text.match(/Total\s*balance\s*\(?USDT\)?\s*[\n\r]*\s*([\d,]+\.?\d*)/i);
+    const eqMatch = text.match(/Total\s*equity\s*\(?USDT\)?\s*[\n\r]*\s*([\d,]+\.?\d*)/i);
+
+    const bal = balMatch ? parseFloat(balMatch[1].replace(/,/g, '')) : 0;
+    const eq = eqMatch ? parseFloat(eqMatch[1].replace(/,/g, '')) : 0;
+    const value = bal || eq;
+
+    if (value > 0) {
+      console.log('[Bitget Tracker] DOM scraped balance:', value);
+      pushToTracker('copy_details', { totalBalance: value, totalEquity: eq || value });
+    }
+
+    // Scrape balance history table if visible
+    const rows = document.querySelectorAll('table tr, [class*="row"], [class*="item"]');
+    const historyRows = [];
+    rows.forEach(row => {
+      const cells = row.innerText.trim();
+      const addMatch = cells.match(/Add\s+([\d,]+\.?\d*)\s+USDT/i);
+      const outMatch = cells.match(/Transfer\s*out\s+([\d,]+\.?\d*)\s+USDT/i);
+      if (addMatch) {
+        historyRows.push({ type: 'Add', amount: parseFloat(addMatch[1].replace(/,/g, '')) });
+      } else if (outMatch) {
+        historyRows.push({ type: 'Transfer out', amount: parseFloat(outMatch[1].replace(/,/g, '')) });
+      }
+    });
+    if (historyRows.length > 0) {
+      console.log('[Bitget Tracker] DOM scraped balance_history:', historyRows.length, 'rows');
+      pushToTracker('balance_history', historyRows);
+    }
+  }
+
   // Start polling after page load
   window.addEventListener('load', () => {
     activePoll();
     setInterval(activePoll, 60_000);
+
+    // Scrape DOM every 30s (catches balance that doesn't come via API)
+    setTimeout(scrapeCopyDetails, 5_000);
+    setInterval(scrapeCopyDetails, 30_000);
   });
 
   console.log('[Bitget Tracker] v2.0 loaded — pushing to', TRACKER_URL);
