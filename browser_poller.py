@@ -132,11 +132,13 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
             captured_apis: dict = {}
 
             async def _on_resp(resp):
-                if "/v1/trace/mt5/" not in resp.url:
+                url = resp.url
+                # Capture any Bitget API call (not just /v1/trace/mt5/)
+                if "bitget.com/v" not in url and "bitget.com/api" not in url:
                     return
                 try:
                     body = await resp.json()
-                    path = resp.url.split(".com")[-1].split("?")[0]
+                    path = url.split(".com")[-1].split("?")[0]
                     captured_apis[path] = {"status": resp.status, "body": body}
                 except Exception:
                     pass
@@ -152,15 +154,23 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
             await page.route("**/*", _block)
             _status["browser_alive"] = True
 
-            # Navigate to the trader-detail page so Bitget's own JS fires its API calls.
-            # This reveals the actual balance endpoint the frontend uses.
-            trader_url = f"{BITGET_BASE}/copy-trading/mt5/trader-detail/{PORTFOLIO_ID}"
-            try:
-                await page.goto(trader_url, wait_until="domcontentloaded", timeout=30_000)
-                await page.wait_for_timeout(5000)  # let JS make its API calls
-                logger.info("Trader page loaded; captured %d MT5 API responses", len(captured_apis))
-            except Exception as e:
-                logger.info("Trader page nav ended (%s) — captured %d", e, len(captured_apis))
+            # Navigate to the copy trading my-portfolio page so Bitget's JS fires API calls.
+            # Try a few URL patterns in case one redirects.
+            nav_urls = [
+                f"{BITGET_BASE}/copy-trading/mt5/myPortfolio",
+                f"{BITGET_BASE}/copy-trading/mt5/my-portfolio",
+                f"{BITGET_BASE}/copy-trading/personal",
+            ]
+            for nav_url in nav_urls:
+                try:
+                    await page.goto(nav_url, wait_until="domcontentloaded", timeout=20_000)
+                    await page.wait_for_timeout(4000)
+                    if captured_apis:
+                        logger.info("Captured %d API calls from %s", len(captured_apis), nav_url)
+                        break
+                    logger.info("No API calls captured from %s, trying next", nav_url)
+                except Exception as e:
+                    logger.info("Nav %s ended: %s", nav_url, e)
 
             # Store all captured paths for inspection at /api/poller
             _status["captured_api_paths"] = [
@@ -246,6 +256,7 @@ async def _active_poll(page, push_fn: Callable):
     except Exception as e:
         logger.warning("Poll history error: %s", e)
 
+    bh_probes = []
     for ep in ["/v1/trace/mt5/trace/balanceHistory",
                "/v1/trace/mt5/data/balanceHistory",
                "/v1/trace/mt5/trace/fundFlow"]:
@@ -257,18 +268,24 @@ async def _active_poll(page, push_fn: Callable):
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({portfolioId: pid, pageNo: 1, pageSize: 100}),
                     });
-                    if (!r.ok) return null;
                     const j = await r.json();
+                    if (!r.ok) return {status: r.status, code: j?.code};
                     const rows = j?.data?.rows || j?.data?.list || j?.data || [];
-                    return Array.isArray(rows) && rows.length > 0 ? rows : null;
-                } catch(e) { return null; }
+                    return {status: r.status, code: j?.code,
+                            rows: Array.isArray(rows) ? rows : null,
+                            sample: !Array.isArray(rows) && typeof j?.data === 'object'
+                                ? Object.keys(j?.data||{}).slice(0,6) : null};
+                } catch(e) { return {status: 0, error: String(e)}; }
             }""", [ep, PORTFOLIO_ID])
-            if result:
-                logger.info("Polled balance_history from %s (%d rows)", ep, len(result))
-                push_fn("balance_history", result)
+            bh_probes.append({"ep": ep.split("/")[-1], **result})
+            rows = result.get("rows") if isinstance(result, dict) else None
+            if rows:
+                logger.info("Polled balance_history from %s (%d rows)", ep, len(rows))
+                push_fn("balance_history", rows)
                 break
-        except Exception:
-            pass
+        except Exception as ex:
+            bh_probes.append({"ep": ep.split("/")[-1], "error": str(ex)})
+    _status["last_bh_probes"] = bh_probes
 
     _status["last_poll"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
     _status["polls"] += 1
