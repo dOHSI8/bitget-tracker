@@ -79,8 +79,7 @@ def _push_data(kind: str, data):
         _mt5["balance_sniffs"].append(data)
         _mt5["balance_sniffs"] = _mt5["balance_sniffs"][-20:]
 
-    if _mt5["positions_raw"] is not None or _mt5["history_raw"] is not None:
-        _rebuild_summary()
+    _rebuild_summary()
 
 
 @asynccontextmanager
