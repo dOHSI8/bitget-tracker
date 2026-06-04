@@ -14,7 +14,6 @@ BITGET_BASE = "https://www.bitget.com"
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SEC", "120"))
 COOKIES_FILE = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
 
-# Minimal Chrome flags — reduce memory as much as possible
 CHROMIUM_ARGS = [
     "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
     "--disable-gpu", "--single-process", "--no-zygote",
@@ -34,6 +33,7 @@ _status = {
     "last_error": None,
     "polls": 0,
     "scrapes": 0,
+    "pushes": 0,
 }
 
 
@@ -83,6 +83,12 @@ async def start_poller(push_fn: Callable):
         _status["last_error"] = "Playwright not installed"
         return
 
+    # Wrap push_fn to count successful pushes
+    def _counted_push(kind: str, data):
+        _status["pushes"] += 1
+        logger.info("push_fn called: kind=%s pushes=%d", kind, _status["pushes"])
+        push_fn(kind, data)
+
     while True:
         cookie_str = _load_cookie_string()
         if not cookie_str:
@@ -93,13 +99,13 @@ async def start_poller(push_fn: Callable):
 
         _status["last_error"] = None
         try:
-            await _poll_once(push_fn, cookie_str)
+            await _poll_once(_counted_push, cookie_str)
         except Exception as e:
             logger.error("Poll cycle crashed: %s", e)
             _status["last_error"] = f"Poll error: {e}"
 
         _status["browser_alive"] = False
-        logger.info("Next poll in %ds...", POLL_INTERVAL)
+        logger.info("Next poll in %ds… (pushes so far: %d)", POLL_INTERVAL, _status["pushes"])
         await asyncio.sleep(POLL_INTERVAL)
 
 
@@ -114,15 +120,10 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             )
 
-            # Load user's session cookies (Bitget auth + any existing cf_clearance)
             cookies = _parse_cookie_string(cookie_str)
             if cookies:
                 await context.add_cookies(cookies)
 
-            # ── Step 1: brief page visit to pass Cloudflare JS challenge ──
-            # This gets a fresh cf_clearance tied to this server's IP.
-            # We block heavy resources to minimise memory, but allow scripts
-            # so the Cloudflare challenge can run.
             page = await context.new_page()
 
             async def _block(route):
@@ -137,76 +138,79 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
             try:
                 await page.goto(f"{BITGET_BASE}/about",
                                 wait_until="domcontentloaded", timeout=30_000)
-                logger.info("Navigation OK — Cloudflare passed")
+                logger.info("Navigation OK")
             except Exception as e:
                 logger.info("Navigation ended early (%s) — continuing", e)
 
-            await page.close()  # free renderer memory immediately
+            # Use page.evaluate so JavaScript fetch runs in browser context
+            # with full cookie access (credentials:include picks up cf_clearance etc.)
+            await _active_poll(page, push_fn)
+            await _fetch_balance(page, push_fn)
 
-            # ── Step 2: use context.request for all API calls ──
-            # context.request shares the browser context (including the fresh
-            # cf_clearance set in step 1) but doesn't need a renderer process.
-            req = context.request
-            await _active_poll(req, push_fn)
-            await _fetch_balance(req, push_fn)
-
-            logger.info("Poll cycle complete")
+            logger.info("Poll cycle complete — closing browser")
         finally:
             await browser.close()
 
 
-async def _active_poll(req, push_fn: Callable):
-    logger.info("Polling APIs...")
+async def _active_poll(page, push_fn: Callable):
+    logger.info("Polling APIs via page.evaluate...")
 
     try:
-        r = await req.post(
-            f"{BITGET_BASE}/v1/trace/mt5/data/tracePosition",
-            data=json.dumps({"portfolioId": PORTFOLIO_ID}),
-            headers={"Content-Type": "application/json"},
-            timeout=20_000,
-        )
-        data = await _safe_json(r)
-        logger.info("Positions: HTTP %s code=%s", r.status, data.get("code") if data else "err")
-        if r.ok and data:
-            push_fn("positions", data)
+        pos = await page.evaluate("""async (pid) => {
+            try {
+                const r = await fetch('/v1/trace/mt5/data/tracePosition', {
+                    method: 'POST', credentials: 'include',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({portfolioId: pid}),
+                });
+                const j = await r.json();
+                return {status: r.status, data: j};
+            } catch(e) { return {status: 0, error: String(e)}; }
+        }""", PORTFOLIO_ID)
+        logger.info("Positions: HTTP %s code=%s", pos.get("status"), (pos.get("data") or {}).get("code"))
+        if pos.get("status") == 200 and pos.get("data"):
+            push_fn("positions", pos["data"])
     except Exception as e:
         logger.warning("Poll positions error: %s", e)
 
     try:
-        r = await req.post(
-            f"{BITGET_BASE}/v1/trace/mt5/trace/positionHistory",
-            data=json.dumps({"portfolioId": PORTFOLIO_ID, "pageNo": 1, "pageSize": 50}),
-            headers={"Content-Type": "application/json"},
-            timeout=20_000,
-        )
-        data = await _safe_json(r)
-        logger.info("History: HTTP %s code=%s", r.status, data.get("code") if data else "err")
-        if r.ok and data:
-            push_fn("history", data)
+        hist = await page.evaluate("""async (pid) => {
+            try {
+                const r = await fetch('/v1/trace/mt5/trace/positionHistory', {
+                    method: 'POST', credentials: 'include',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({portfolioId: pid, pageNo: 1, pageSize: 50}),
+                });
+                const j = await r.json();
+                return {status: r.status, data: j};
+            } catch(e) { return {status: 0, error: String(e)}; }
+        }""", PORTFOLIO_ID)
+        logger.info("History: HTTP %s code=%s", hist.get("status"), (hist.get("data") or {}).get("code"))
+        if hist.get("status") == 200 and hist.get("data"):
+            push_fn("history", hist["data"])
     except Exception as e:
         logger.warning("Poll history error: %s", e)
 
-    for ep in [
-        "/v1/trace/mt5/trace/balanceHistory",
-        "/v1/trace/mt5/data/balanceHistory",
-        "/v1/trace/mt5/trace/fundFlow",
-    ]:
+    for ep in ["/v1/trace/mt5/trace/balanceHistory",
+               "/v1/trace/mt5/data/balanceHistory",
+               "/v1/trace/mt5/trace/fundFlow"]:
         try:
-            r = await req.post(
-                f"{BITGET_BASE}{ep}",
-                data=json.dumps({"portfolioId": PORTFOLIO_ID, "pageNo": 1, "pageSize": 100}),
-                headers={"Content-Type": "application/json"},
-                timeout=20_000,
-            )
-            if not r.ok:
-                continue
-            j = await _safe_json(r) or {}
-            rows = j.get("data") or []
-            if isinstance(rows, dict):
-                rows = rows.get("rows") or rows.get("list") or []
-            if isinstance(rows, list) and rows:
-                logger.info("Polled balance_history from %s", ep)
-                push_fn("balance_history", rows)
+            result = await page.evaluate("""async ([ep, pid]) => {
+                try {
+                    const r = await fetch(ep, {
+                        method: 'POST', credentials: 'include',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({portfolioId: pid, pageNo: 1, pageSize: 100}),
+                    });
+                    if (!r.ok) return null;
+                    const j = await r.json();
+                    const rows = j?.data?.rows || j?.data?.list || j?.data || [];
+                    return Array.isArray(rows) && rows.length > 0 ? rows : null;
+                } catch(e) { return null; }
+            }""", [ep, PORTFOLIO_ID])
+            if result:
+                logger.info("Polled balance_history from %s (%d rows)", ep, len(result))
+                push_fn("balance_history", result)
                 break
         except Exception:
             pass
@@ -215,62 +219,47 @@ async def _active_poll(req, push_fn: Callable):
     _status["polls"] += 1
 
 
-async def _fetch_balance(req, push_fn: Callable):
-    get_eps = [
-        f"/v1/trace/mt5/trace/traceDetail?portfolioId={PORTFOLIO_ID}",
-        f"/v1/trace/mt5/data/copyDetail?portfolioId={PORTFOLIO_ID}",
-        f"/v1/trace/mt5/data/accountInfo?portfolioId={PORTFOLIO_ID}",
-        f"/v1/trace/mt5/account/balance?portfolioId={PORTFOLIO_ID}",
-        f"/v1/trace/mt5/data/followerDetail?portfolioId={PORTFOLIO_ID}",
-        f"/v1/trace/mt5/trace/followerDetail?portfolioId={PORTFOLIO_ID}",
+async def _fetch_balance(page, push_fn: Callable):
+    endpoints = [
+        ("/v1/trace/mt5/trace/traceDetail", True),
+        ("/v1/trace/mt5/data/copyDetail", True),
+        ("/v1/trace/mt5/data/accountInfo", True),
+        ("/v1/trace/mt5/account/balance", True),
+        ("/v1/trace/mt5/data/followerDetail", True),
+        ("/v1/trace/mt5/trace/followerDetail", True),
     ]
-    for ep in get_eps:
+    for ep, is_post in endpoints:
         try:
-            r = await req.get(f"{BITGET_BASE}{ep}", timeout=20_000)
-            if not r.ok:
-                logger.info("Balance GET %s → %s", ep.split("?")[0].split("/")[-1], r.status)
-                continue
-            result = await _safe_json(r) or {}
-            d = result.get("data", result) if isinstance(result, dict) else result
-            if isinstance(d, dict) and any("balance" in k.lower() or "equity" in k.lower() for k in d):
-                logger.info("Found balance via GET %s", ep.split("?")[0].split("/")[-1])
-                push_fn("copy_details", d)
-                _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
-                _status["scrapes"] += 1
-                return
-        except Exception as e:
-            logger.warning("Balance GET %s: %s", ep.split("?")[0].split("/")[-1], e)
+            result = await page.evaluate("""async ([ep, pid, isPost]) => {
+                try {
+                    const opts = {credentials: 'include'};
+                    if (isPost) {
+                        opts.method = 'POST';
+                        opts.headers = {'Content-Type': 'application/json'};
+                        opts.body = JSON.stringify({portfolioId: pid});
+                    }
+                    const r = await fetch(ep, opts);
+                    if (!r.ok) return {status: r.status};
+                    const j = await r.json();
+                    return {status: r.status, data: j};
+                } catch(e) { return {status: 0, error: String(e)}; }
+            }""", [ep, PORTFOLIO_ID, is_post])
 
-    for ep in [
-        "/v1/trace/mt5/trace/traceDetail", "/v1/trace/mt5/data/copyDetail",
-        "/v1/trace/mt5/data/followerDetail", "/v1/trace/mt5/data/accountInfo",
-        "/v1/trace/mt5/account/balance",
-    ]:
-        try:
-            r = await req.post(
-                f"{BITGET_BASE}{ep}",
-                data=json.dumps({"portfolioId": PORTFOLIO_ID}),
-                headers={"Content-Type": "application/json"},
-                timeout=20_000,
-            )
-            if not r.ok:
+            if not result or result.get("status") != 200:
+                logger.info("Balance %s → HTTP %s", ep.split("/")[-1], result.get("status") if result else 0)
                 continue
-            result = await _safe_json(r) or {}
-            d = result.get("data", result) if isinstance(result, dict) else result
-            if isinstance(d, dict) and any("balance" in k.lower() or "equity" in k.lower() for k in d):
-                logger.info("Found balance via POST %s", ep.split("/")[-1])
-                push_fn("copy_details", d)
-                _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
-                _status["scrapes"] += 1
-                return
+
+            j = result.get("data") or {}
+            d = j.get("data", j) if isinstance(j, dict) else j
+            if isinstance(d, dict):
+                if any("balance" in k.lower() or "equity" in k.lower() for k in d):
+                    logger.info("Found balance via %s", ep.split("/")[-1])
+                    push_fn("copy_details", d)
+                    _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+                    _status["scrapes"] += 1
+                    return
+                logger.info("Balance %s → keys: %s", ep.split("/")[-1], list(d.keys())[:6])
         except Exception as e:
-            logger.warning("Balance POST %s: %s", ep.split("/")[-1], e)
+            logger.warning("Balance %s error: %s", ep.split("/")[-1], e)
 
     logger.warning("No balance endpoint found")
-
-
-async def _safe_json(r) -> dict | None:
-    try:
-        return await r.json()
-    except Exception:
-        return None

@@ -654,8 +654,8 @@
         text.textContent = 'Poller: running…';
         last.textContent = s.polls + ' polls';
       } else if (s.polls > 0) {
-        dot.style.background = 'var(--green)';
-        text.textContent = 'Poller: idle (' + s.polls + ' polls done)';
+        dot.style.background = s.pushes > 0 ? 'var(--green)' : 'var(--amber)';
+        text.textContent = 'Poller: idle (' + s.polls + ' polls, ' + (s.pushes || 0) + ' pushes)';
         last.textContent = s.last_poll ? 'Last: ' + s.last_poll.split(' ')[1] : '';
       } else {
         dot.style.background = 'var(--amber)';

@@ -79,7 +79,10 @@ def _push_data(kind: str, data):
         _mt5["balance_sniffs"].append(data)
         _mt5["balance_sniffs"] = _mt5["balance_sniffs"][-20:]
 
-    _rebuild_summary()
+    try:
+        _rebuild_summary()
+    except Exception as e:
+        logger.error("_rebuild_summary failed: %s", e)
 
 
 @asynccontextmanager
