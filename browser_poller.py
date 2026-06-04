@@ -252,13 +252,14 @@ async def _fetch_balance(page, push_fn: Callable):
             j = result.get("data") or {}
             d = j.get("data", j) if isinstance(j, dict) else j
             if isinstance(d, dict):
-                if any("balance" in k.lower() or "equity" in k.lower() for k in d):
+                _BAL_PATS = ("balance", "equity", "totalasset", "accountval", "worth", "asset")
+                if any(any(pat in k.lower() for pat in _BAL_PATS) for k in d):
                     logger.info("Found balance via %s", ep.split("/")[-1])
                     push_fn("copy_details", d)
                     _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
                     _status["scrapes"] += 1
                     return
-                logger.info("Balance %s → keys: %s", ep.split("/")[-1], list(d.keys())[:6])
+                logger.info("Balance %s → all keys: %s", ep.split("/")[-1], list(d.keys()))
         except Exception as e:
             logger.warning("Balance %s error: %s", ep.split("/")[-1], e)
 

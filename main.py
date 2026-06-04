@@ -29,8 +29,11 @@ def _push_data(kind: str, data):
     elif kind == "copy_details":
         if isinstance(data, dict):
             changed = False
+            # Search for any key that suggests account balance
+            _BALANCE_PATS = ("balance", "equity", "totalbal", "totalequity",
+                             "totalasset", "accountval", "worth", "asset")
             for key in list(data.keys()):
-                if any(pat in key.lower() for pat in ("balance", "equity", "totalbal", "totalequity")):
+                if any(pat in key.lower() for pat in _BALANCE_PATS):
                     try:
                         val = round(float(data[key]), 2)
                         if val > 0:
@@ -40,7 +43,10 @@ def _push_data(kind: str, data):
                             break
                     except (TypeError, ValueError):
                         pass
-            for key in ("estNetProfit", "est_net_profit", "netProfit"):
+            if not changed:
+                logger.info("copy_details keys (no balance found): %s", list(data.keys())[:10])
+            for key in ("estNetProfit", "est_net_profit", "netProfit", "totalProfit",
+                        "cumProfitLoss", "totalPL"):
                 if key in data:
                     try:
                         val = round(float(data[key]), 2)
@@ -49,7 +55,8 @@ def _push_data(kind: str, data):
                         break
                     except (TypeError, ValueError):
                         pass
-            for key in ("realizedPnl", "realized_pnl", "realPnl"):
+            for key in ("realizedPnl", "realized_pnl", "realPnl", "realizedPL",
+                        "realizedProfit", "closedPL"):
                 if key in data:
                     try:
                         _settings["realized_pnl"] = round(float(data[key]), 2)
@@ -170,21 +177,48 @@ _mt5: dict = {
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
 def _extract_positions(raw: Any) -> list:
+    if isinstance(raw, list):
+        return raw
     if isinstance(raw, dict):
         d = raw.get("data")
         if isinstance(d, list):
             return d
-    return raw if isinstance(raw, list) else []
+        if isinstance(d, dict):
+            return d.get("list") or d.get("rows") or d.get("posList") or d.get("data") or []
+    return []
 
 
 def _extract_history_rows(raw: Any) -> list:
+    if isinstance(raw, list):
+        return raw
     if isinstance(raw, dict):
         d = raw.get("data")
-        if isinstance(d, dict):
-            return d.get("rows") or d.get("list") or []
         if isinstance(d, list):
             return d
+        if isinstance(d, dict):
+            return d.get("rows") or d.get("list") or d.get("data") or []
     return []
+
+
+def _parse_side(p: dict) -> str:
+    """Resolve position side from any of the known field variants."""
+    raw = (p.get("side") or p.get("holdSide") or
+           p.get("directionType") or p.get("orderType") or 0)
+    if isinstance(raw, str):
+        return "short" if raw.lower() in ("short", "sell", "1") else "long"
+    return "short" if int(raw) == 1 else "long"
+
+
+def _fv(*keys, src: dict, default=0.0) -> float:
+    """Return the first non-None, non-empty value from src matching any key."""
+    for k in keys:
+        v = src.get(k)
+        if v is not None and v != "":
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return default
 
 
 def _parse_positions(raw: Any) -> list[dict]:
@@ -193,13 +227,13 @@ def _parse_positions(raw: Any) -> list[dict]:
         if not isinstance(p, dict):
             continue
         try:
-            direction = int(p.get("directionType") or p.get("orderType") or 0)
             out.append({
-                "symbol": str(p.get("symbol") or ""),
-                "side": "short" if direction == 1 else "long",
-                "size": float(p.get("volume") or 0),
-                "entry_price": float(p.get("openPrice") or 0),
-                "unrealized_pnl": round(float(p.get("profit") or 0), 4),
+                "symbol": str(p.get("symbol") or p.get("symbolName") or p.get("instId") or ""),
+                "side": _parse_side(p),
+                "size": _fv("volume", "holdSize", "openSize", "size", "openOrderSize", "total", src=p),
+                "entry_price": _fv("openPrice", "openPriceAvg", "averageOpenPrice", "entryPrice", src=p),
+                "unrealized_pnl": round(_fv("profit", "unrealizedPL", "unrealizedPnl",
+                                            "unrealizedPNL", "upl", src=p), 4),
             })
         except (TypeError, ValueError):
             continue
@@ -212,17 +246,22 @@ def _parse_trades(raw: Any) -> list[dict]:
         if not isinstance(h, dict):
             continue
         try:
-            direction = int(h.get("directionType") or h.get("orderType") or 0)
-            ct = int(h.get("closeTime") or 0)
+            ct_raw = (h.get("closeTime") or h.get("closedAt") or
+                      h.get("closeTs") or h.get("ctime") or 0)
+            ct = int(ct_raw)
+            if 0 < ct < 10_000_000_000:  # seconds → ms
+                ct *= 1000
             out.append({
                 "time": _ms_to_bkk_datetime(ct),
-                "symbol": str(h.get("symbol") or ""),
-                "side": "short" if direction == 1 else "long",
-                "open_price": float(h.get("openPrice") or 0),
-                "close_price": float(h.get("closePrice") or 0),
-                "size": float(h.get("totalVolume") or h.get("closeVolume") or 0),
-                "pnl": round(float(h.get("totalProfit") or h.get("profit") or 0), 4),
-                "commission": round(abs(float(h.get("commission") or 0)), 4),
+                "symbol": str(h.get("symbol") or h.get("symbolName") or h.get("instId") or ""),
+                "side": _parse_side(h),
+                "open_price": _fv("openPrice", "openPriceAvg", "averageOpenPrice", "entryPrice", src=h),
+                "close_price": _fv("closePrice", "closePriceAvg", src=h),
+                "size": _fv("totalVolume", "closeVolume", "size", "closeSize",
+                            "totalSize", "volume", src=h),
+                "pnl": round(_fv("totalProfit", "profit", "realizedPL", "realizedPnl",
+                                 "realizedPNL", "pnl", src=h), 4),
+                "commission": round(abs(_fv("commission", "fee", "tradeFee", src=h)), 4),
                 "close_time_ms": ct,
             })
         except (TypeError, ValueError):
@@ -347,18 +386,31 @@ async def get_mt5_history():
 
 @app.get("/api/mt5/debug")
 async def get_mt5_debug():
-    raw = _mt5["positions_raw"]
-    extracted = _extract_positions(raw)
-    parsed = _parse_positions(raw)
+    pos_raw = _mt5["positions_raw"]
+    hist_raw = _mt5["history_raw"]
+    extracted_pos = _extract_positions(pos_raw)
+    extracted_hist = _extract_history_rows(hist_raw)
+    parsed_pos = _parse_positions(pos_raw)
+    parsed_hist = _parse_trades(hist_raw)
     return {
-        "positions_raw_type": type(raw).__name__,
-        "positions_raw_keys": list(raw.keys()) if isinstance(raw, dict) else None,
-        "data_field": raw.get("data") if isinstance(raw, dict) else None,
-        "data_field_type": type(raw.get("data")).__name__ if isinstance(raw, dict) else None,
-        "extracted_count": len(extracted),
-        "extracted_sample": extracted[:1],
-        "parsed_count": len(parsed),
-        "parsed": parsed,
+        "positions": {
+            "raw_type": type(pos_raw).__name__,
+            "raw_keys": list(pos_raw.keys()) if isinstance(pos_raw, dict) else None,
+            "data_type": type(pos_raw.get("data")).__name__ if isinstance(pos_raw, dict) else None,
+            "extracted_count": len(extracted_pos),
+            "first_raw_item": extracted_pos[0] if extracted_pos else None,
+            "parsed_count": len(parsed_pos),
+            "parsed": parsed_pos,
+        },
+        "history": {
+            "raw_type": type(hist_raw).__name__,
+            "raw_keys": list(hist_raw.keys()) if isinstance(hist_raw, dict) else None,
+            "extracted_count": len(extracted_hist),
+            "first_raw_item": extracted_hist[0] if extracted_hist else None,
+            "parsed_count": len(parsed_hist),
+            "parsed_sample": parsed_hist[:3],
+        },
+        "settings": _settings,
     }
 
 
