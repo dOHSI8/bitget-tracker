@@ -154,13 +154,23 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
             await page.route("**/*", _block)
             _status["browser_alive"] = True
 
-            # Navigate to Bitget /about to pass Cloudflare, then manual fetches handle the rest.
+            # Step 1: Navigate to /about to pass Cloudflare challenge
             try:
                 await page.goto(f"{BITGET_BASE}/about",
                                 wait_until="domcontentloaded", timeout=30_000)
-                logger.info("Navigation OK; captured %d API responses", len(captured_apis))
+                logger.info("CF challenge passed")
             except Exception as e:
-                logger.info("Navigation ended early (%s)", e)
+                logger.info("About nav: %s", e)
+
+            # Step 2: Navigate to the actual portfolio page so its JS makes
+            # authenticated API calls (including the balance endpoint)
+            portfolio_url = f"{BITGET_BASE}/copy-trading/cfd-center/my-portfolio/{PORTFOLIO_ID}"
+            try:
+                await page.goto(portfolio_url, wait_until="domcontentloaded", timeout=30_000)
+                await page.wait_for_timeout(5000)
+                logger.info("Portfolio page loaded; captured %d API responses", len(captured_apis))
+            except Exception as e:
+                logger.info("Portfolio page nav ended (%s); captured %d", e, len(captured_apis))
 
             # Store all captured paths for inspection at /api/poller
             _status["captured_api_paths"] = [
