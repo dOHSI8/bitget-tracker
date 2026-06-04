@@ -1,4 +1,4 @@
 fastapi
 uvicorn
 python-dotenv
-curl_cffi
+curl-cffi>=0.7

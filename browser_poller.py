@@ -97,9 +97,10 @@ async def _active_poll(s: AsyncSession, headers: dict, push_fn: Callable):
             json={"portfolioId": PORTFOLIO_ID},
             headers=headers,
         )
-        logger.info("Positions: HTTP %s code=%s", r.status_code, _api_code(r))
-        if r.status_code == 200:
-            push_fn("positions", r.json())
+        data = _safe_json(r)
+        logger.info("Positions: HTTP %s code=%s", r.status_code, data.get("code", "?") if data else "err")
+        if r.status_code == 200 and data:
+            push_fn("positions", data)
     except Exception as e:
         logger.warning("Poll positions error: %s", e)
 
@@ -109,9 +110,10 @@ async def _active_poll(s: AsyncSession, headers: dict, push_fn: Callable):
             json={"portfolioId": PORTFOLIO_ID, "pageNo": 1, "pageSize": 50},
             headers=headers,
         )
-        logger.info("History: HTTP %s code=%s", r.status_code, _api_code(r))
-        if r.status_code == 200:
-            push_fn("history", r.json())
+        data = _safe_json(r)
+        logger.info("History: HTTP %s code=%s", r.status_code, data.get("code", "?") if data else "err")
+        if r.status_code == 200 and data:
+            push_fn("history", data)
     except Exception as e:
         logger.warning("Poll history error: %s", e)
 
@@ -128,7 +130,7 @@ async def _active_poll(s: AsyncSession, headers: dict, push_fn: Callable):
             )
             if r.status_code != 200:
                 continue
-            j = r.json()
+            j = _safe_json(r) or {}
             rows = j.get("data") or []
             if isinstance(rows, dict):
                 rows = rows.get("rows") or rows.get("list") or []
@@ -159,7 +161,7 @@ async def _fetch_balance(s: AsyncSession, headers: dict, push_fn: Callable):
             if r.status_code != 200:
                 logger.info("Balance GET %s → HTTP %s", ep.split("?")[0].split("/")[-1], r.status_code)
                 continue
-            result = r.json()
+            result = _safe_json(r) or {}
             d = result.get("data", result) if isinstance(result, dict) else result
             if isinstance(d, dict):
                 if any("balance" in k.lower() or "equity" in k.lower() for k in d):
@@ -190,7 +192,7 @@ async def _fetch_balance(s: AsyncSession, headers: dict, push_fn: Callable):
             if r.status_code != 200:
                 logger.info("Balance POST %s → HTTP %s", ep.split("/")[-1], r.status_code)
                 continue
-            result = r.json()
+            result = _safe_json(r) or {}
             d = result.get("data", result) if isinstance(result, dict) else result
             if isinstance(d, dict):
                 if any("balance" in k.lower() or "equity" in k.lower() for k in d):
@@ -206,8 +208,8 @@ async def _fetch_balance(s: AsyncSession, headers: dict, push_fn: Callable):
     logger.warning("No balance endpoint found")
 
 
-def _api_code(r) -> str:
+def _safe_json(r) -> dict | None:
     try:
-        return r.json().get("code", "?")
+        return r.json()
     except Exception:
-        return "?"
+        return None

@@ -431,6 +431,35 @@ async def get_poller_status():
     return get_status()
 
 
+@app.get("/api/poller/test")
+async def test_poller_cookie():
+    """Make one live test call to Bitget and return what it says — useful for diagnosing cookie issues."""
+    from browser_poller import _load_cookie_string, BITGET_BASE, PORTFOLIO_ID, IMPERSONATE
+    cookie_str = _load_cookie_string()
+    if not cookie_str:
+        return {"ok": False, "error": "No cookie set"}
+    try:
+        from curl_cffi.requests import AsyncSession
+        headers = {
+            "Cookie": cookie_str,
+            "Referer": f"{BITGET_BASE}/copy-trading/mt5/follower/detail?portfolioId={PORTFOLIO_ID}",
+            "Origin": BITGET_BASE,
+        }
+        async with AsyncSession(impersonate=IMPERSONATE) as s:
+            r = await s.post(
+                f"{BITGET_BASE}/v1/trace/mt5/data/tracePosition",
+                json={"portfolioId": PORTFOLIO_ID},
+                headers=headers,
+            )
+        try:
+            body = r.json()
+        except Exception:
+            body = r.text[:500]
+        return {"http_status": r.status_code, "body": body}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/api/poller/cookie")
 async def set_poller_cookie(request: Request):
     body = await request.json()
