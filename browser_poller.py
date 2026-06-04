@@ -176,7 +176,7 @@ async def _active_poll(page, push_fn: Callable):
             "http": pos.get("status"), "code": api_code, "msg": api_msg,
             "data_preview": str(pos.get("data"))[:200] if pos.get("data") else None,
         }
-        if pos.get("status") == 200 and api_code == "00000":
+        if pos.get("status") == 200 and api_code in ("00000", "200", "0"):
             push_fn("positions", pos["data"])
     except Exception as e:
         logger.warning("Poll positions error: %s", e)
@@ -200,7 +200,7 @@ async def _active_poll(page, push_fn: Callable):
             "http": hist.get("status"), "code": api_code, "msg": api_msg,
             "data_preview": str(hist.get("data"))[:200] if hist.get("data") else None,
         }
-        if hist.get("status") == 200 and api_code == "00000":
+        if hist.get("status") == 200 and api_code in ("00000", "200", "0"):
             push_fn("history", hist["data"])
     except Exception as e:
         logger.warning("Poll history error: %s", e)
