@@ -1,46 +1,23 @@
-// SETUP: In Scriptable, run this script once manually first.
-// It will prompt you to enter your server URL (e.g. https://bitget-tracker-v2.onrender.com)
-// and save it to Keychain automatically.
-// Supports: Medium (home screen) and accessoryRectangular (lock screen).
+// Bitget Tracker — Scriptable widget
+// Works in: home screen widget, lock screen widget, Scriptable app, iOS Shortcut
 
-const KEYCHAIN_KEY = "bitget_tracker_url";
-const GREEN  = new Color("#00c47a");
-const RED    = new Color("#ff4d4d");
-const AMBER  = new Color("#f59e0b");
-const WHITE  = new Color("#ffffff");
-const MUTED  = new Color("#888888");
-const BG     = new Color("#111111");
-const SEP_C  = new Color("#333333");
+const BASE_URL = "https://bitget-tracker-v2.onrender.com";
 
-// ── First-run setup ──
-if (!config.runsInWidget) {
-  const stored = Keychain.contains(KEYCHAIN_KEY) ? Keychain.get(KEYCHAIN_KEY) : null;
-  const prompt = new Alert();
-  prompt.title = "Bitget Tracker Setup";
-  prompt.message = "Enter your server URL (e.g. https://bitget-tracker-v2.onrender.com)";
-  prompt.addTextField("Server URL", stored || "https://bitget-tracker-v2.onrender.com");
-  prompt.addAction("Save");
-  prompt.addCancelAction("Cancel");
-  const idx = await prompt.presentAlert();
-  if (idx === 0) {
-    const url = prompt.textFieldValue(0).replace(/\/$/, "");
-    Keychain.set(KEYCHAIN_KEY, url);
-    const done = new Alert();
-    done.title = "Saved!";
-    done.message = `URL saved: ${url}\n\nAdd a Medium widget (home) or Rectangular widget (lock screen).`;
-    done.addAction("OK");
-    await done.presentAlert();
-  }
-  Script.complete();
-  return;
-}
+const GREEN = new Color("#00c47a");
+const RED   = new Color("#ff4d4d");
+const AMBER = new Color("#f59e0b");
+const WHITE = new Color("#ffffff");
+const MUTED = new Color("#888888");
+const BG    = new Color("#111111");
+const SEP_C = new Color("#333333");
 
-// ── Shared helpers ──
-async function fetchData(baseUrl) {
-  const req = new Request(`${baseUrl}/api/widget`);
-  req.timeoutInterval = 8;
+// ── Fetch ─────────────────────────────────────────────────────────────────────
+async function fetchData() {
+  const req = new Request(`${BASE_URL}/api/widget`);
+  req.timeoutInterval = 30;
   try {
     const data = await req.loadJSON();
+    Keychain.set("bitget_widget_cache", JSON.stringify(data));
     return { data, stale: data.stale || false };
   } catch (e) {
     const cached = Keychain.contains("bitget_widget_cache")
@@ -50,6 +27,7 @@ async function fetchData(baseUrl) {
   }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function txt(stack, content, size, color, bold = false) {
   const t = stack.addText(content);
   t.font = bold ? Font.boldSystemFont(size) : Font.systemFont(size);
@@ -75,33 +53,23 @@ function fmtShort(n) {
   return (n >= 0 ? "+" : "-") + "$" + abs.toFixed(2);
 }
 
-// ── Fetch data ──
-if (!Keychain.contains(KEYCHAIN_KEY)) {
-  const w = new ListWidget();
-  w.backgroundColor = BG;
-  const t = w.addText("⚙ Run script to set up");
-  t.font = Font.systemFont(10);
-  t.textColor = MUTED;
-  Script.setWidget(w);
-  Script.complete();
-  return;
-}
-
-const baseUrl = Keychain.get(KEYCHAIN_KEY);
-const { data, stale } = await fetchData(baseUrl);
+// ── Main ──────────────────────────────────────────────────────────────────────
+const { data, stale } = await fetchData();
 
 if (!data) {
   const w = new ListWidget();
   w.backgroundColor = BG;
-  const t = w.addText("⚠ No data");
+  const t = w.addText("⚠ No data — check server");
   t.font = Font.boldSystemFont(11);
   t.textColor = AMBER;
-  Script.setWidget(w);
+  if (config.runsInWidget) {
+    Script.setWidget(w);
+  } else {
+    await QuickLook.present(w);
+  }
   Script.complete();
   return;
 }
-
-Keychain.set("bitget_widget_cache", JSON.stringify(data));
 
 const pnl    = data.daily_pnl ?? 0;
 const bal    = data.total_balance ?? 0;
@@ -115,54 +83,47 @@ const pnlColor = pnl >= 0 ? GREEN : RED;
 const family = config.widgetFamily;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LOCK SCREEN — accessoryRectangular (small rectangle on lock screen)
+// LOCK SCREEN — accessoryRectangular
 // ═══════════════════════════════════════════════════════════════════════════
 if (family === "accessoryRectangular") {
   const lw = new ListWidget();
   lw.setPadding(0, 0, 0, 0);
+  lw.refreshAfterDate = new Date(Date.now() + 2 * 60 * 1000);
 
-  const pnlStr = (pnl >= 0 ? "+" : "-") + fmtUSD(pnl);
-  const oPnlStr = (oPnl >= 0 ? "+" : "-") + fmtUSD(oPnl);
-  const allStr = (allPnl >= 0 ? "+" : "-") + fmtUSD(allPnl);
-  const oPnlC = oPnl >= 0 ? GREEN : RED;
-  const allC = allPnl >= 0 ? GREEN : RED;
+  const pnlStr  = fmtPnL(pnl);
+  const oPnlStr = fmtPnL(oPnl);
+  const allStr  = fmtPnL(allPnl);
+  const oPnlC   = oPnl >= 0 ? GREEN : RED;
+  const allC    = allPnl >= 0 ? GREEN : RED;
   const posLabel = nPos === 1 ? "1 position" : nPos + " positions";
 
-  // Row 1: Bal  $1,005.53
-  const r1 = lw.addStack();
-  r1.layoutHorizontally();
-  r1.centerAlignContent();
+  const r1 = lw.addStack(); r1.layoutHorizontally(); r1.centerAlignContent();
   txt(r1, "Bal  " + fmtUSD(bal), 12, WHITE, true);
   r1.addSpacer();
   if (stale) { txt(r1, "stale", 10, AMBER); }
 
   lw.addSpacer(1);
 
-  // Row 2: Today  +$39.42
-  const r2 = lw.addStack();
-  r2.layoutHorizontally();
-  r2.centerAlignContent();
+  const r2 = lw.addStack(); r2.layoutHorizontally(); r2.centerAlignContent();
   txt(r2, "Today  ", 10, MUTED);
   txt(r2, pnlStr, 12, pnlColor, true);
 
   lw.addSpacer(1);
 
-  // Row 3: Open +$0.00 | 0 positions
-  const r3 = lw.addStack();
-  r3.layoutHorizontally();
-  r3.centerAlignContent();
+  const r3 = lw.addStack(); r3.layoutHorizontally(); r3.centerAlignContent();
   txt(r3, "Open " + oPnlStr + "  |  " + posLabel, 10, oPnlC);
 
   lw.addSpacer(1);
 
-  // Row 4: All time  +$81.17
-  const r4 = lw.addStack();
-  r4.layoutHorizontally();
-  r4.centerAlignContent();
+  const r4 = lw.addStack(); r4.layoutHorizontally(); r4.centerAlignContent();
   txt(r4, "All time  ", 10, MUTED);
   txt(r4, allStr, 12, allC, true);
 
-  Script.setWidget(lw);
+  if (config.runsInWidget) {
+    Script.setWidget(lw);
+  } else {
+    await QuickLook.present(lw);
+  }
   Script.complete();
   return;
 }
@@ -173,7 +134,7 @@ if (family === "accessoryRectangular") {
 const widget = new ListWidget();
 widget.backgroundColor = BG;
 widget.setPadding(14, 14, 14, 14);
-widget.url = baseUrl;
+widget.refreshAfterDate = new Date(Date.now() + 2 * 60 * 1000);
 
 // Row 1: Header
 const row1 = widget.addStack();
@@ -192,15 +153,13 @@ widget.addSpacer(6);
 const row2 = widget.addStack();
 row2.layoutHorizontally();
 
-const balCol = row2.addStack();
-balCol.layoutVertically();
+const balCol = row2.addStack(); balCol.layoutVertically();
 txt(balCol, "BALANCE", 8, MUTED);
 txt(balCol, fmtUSD(bal), 16, WHITE, true);
 
 row2.addSpacer();
 
-const invCol = row2.addStack();
-invCol.layoutVertically();
+const invCol = row2.addStack(); invCol.layoutVertically();
 txt(invCol, "INVESTED", 8, MUTED);
 txt(invCol, fmtUSD(inv), 16, WHITE, true);
 
@@ -229,26 +188,25 @@ widget.addSpacer(6);
 const row4 = widget.addStack();
 row4.layoutHorizontally();
 
-const col1 = row4.addStack();
-col1.layoutVertically();
+const col1 = row4.addStack(); col1.layoutVertically();
 txt(col1, "OPEN P&L", 8, MUTED);
-const oPnlColor = oPnl >= 0 ? GREEN : RED;
-txt(col1, fmtPnL(oPnl), 11, oPnlColor, true);
+txt(col1, fmtPnL(oPnl), 11, oPnl >= 0 ? GREEN : RED, true);
 
 row4.addSpacer();
 
-const col2 = row4.addStack();
-col2.layoutVertically();
+const col2 = row4.addStack(); col2.layoutVertically();
 txt(col2, "POS", 8, MUTED);
 txt(col2, String(nPos), 11, WHITE, true);
 
 row4.addSpacer();
 
-const col3 = row4.addStack();
-col3.layoutVertically();
+const col3 = row4.addStack(); col3.layoutVertically();
 txt(col3, "ALL-TIME", 8, MUTED);
-const allColor = allPnl >= 0 ? GREEN : RED;
-txt(col3, fmtPnL(allPnl), 11, allColor, true);
+txt(col3, fmtPnL(allPnl), 11, allPnl >= 0 ? GREEN : RED, true);
 
-Script.setWidget(widget);
+if (config.runsInWidget) {
+  Script.setWidget(widget);
+} else {
+  await QuickLook.present(widget);
+}
 Script.complete();
