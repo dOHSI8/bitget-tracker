@@ -182,12 +182,22 @@ async def _poll_once(push_fn: Callable, cookie_str: str,
             await page.route("**/*", _block)
             _status["browser_alive"] = True
 
-            try:
-                await page.goto(f"{BITGET_BASE}/about",
-                                wait_until="domcontentloaded", timeout=30_000)
-                logger.info("CF challenge passed")
-            except Exception as e:
-                logger.info("About nav: %s", e)
+            # Warm-up: visit each trading section so Bitget sets all section-specific
+            # cookies before we make API calls. CFD and Futures use separate cookie sets.
+            warmup_pages = ["/about"]
+            has_cfd     = any(trader_types.get(n, "cfd") == "cfd"     for n in traders)
+            has_futures = any(trader_types.get(n, "cfd") == "futures" for n in traders)
+            if has_cfd:
+                warmup_pages.append("/copy-trading/mt5")
+            if has_futures:
+                warmup_pages.append("/copy-trading")
+            for path in warmup_pages:
+                try:
+                    await page.goto(f"{BITGET_BASE}{path}",
+                                    wait_until="domcontentloaded", timeout=30_000)
+                    logger.info("Warm-up nav OK: %s", path)
+                except Exception as e:
+                    logger.info("Warm-up nav %s: %s", path, e)
 
             await _active_poll(page, push_fn, traders, trader_types)
             await _fetch_balance(page, push_fn, traders, trader_types)
