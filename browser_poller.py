@@ -182,15 +182,16 @@ async def _poll_once(push_fn: Callable, cookie_str: str,
             await page.route("**/*", _block)
             _status["browser_alive"] = True
 
-            # Warm-up: visit each trading section so Bitget sets all section-specific
-            # cookies before we make API calls. CFD and Futures use separate cookie sets.
+            # Warm-up: visit each trader's portfolio page so Bitget sets all
+            # section-specific cookies. CFD and Futures use separate cookie sets,
+            # so we must visit both /cfd-center/... and /futures-center/... pages.
             warmup_pages = ["/about"]
-            has_cfd     = any(trader_types.get(n, "cfd") == "cfd"     for n in traders)
-            has_futures = any(trader_types.get(n, "cfd") == "futures" for n in traders)
-            if has_cfd:
-                warmup_pages.append("/copy-trading/mt5")
-            if has_futures:
-                warmup_pages.append("/copy-trading")
+            for tname, pid in traders.items():
+                ttype = trader_types.get(tname, "cfd")
+                if ttype == "futures":
+                    warmup_pages.append(f"/copy-trading/futures-center/my-portfolio/{pid}")
+                else:
+                    warmup_pages.append(f"/copy-trading/cfd-center/my-portfolio/{pid}")
             for path in warmup_pages:
                 try:
                     await page.goto(f"{BITGET_BASE}{path}",
