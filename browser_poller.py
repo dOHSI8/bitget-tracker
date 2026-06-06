@@ -287,7 +287,9 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
         if hist.get("status") == 200 and api_code in ("00000", "200", "0"):
             _status["auth_ok"] = True
             push_fn("history", hist["data"], trader_name)
-        elif hist.get("error") == "html_redirect":
+        elif hist.get("error") == "html_redirect" or api_code == "00004":
+            # html_redirect = Cloudflare session expired
+            # 00004 = Bitget "Login expired, please re-log in"
             _status["auth_ok"] = False
     except Exception as e:
         logger.warning("CFD history[%s] error: %s", trader_name, e)
@@ -386,9 +388,9 @@ async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
         _status["last_balance_probes"] = {"getFollowPortfolios_all": {
             "http": result.get("status"), "code": code, "error": result.get("error")}}
 
-        if result.get("error") == "html_redirect":
+        if result.get("error") == "html_redirect" or code == "00004":
             _status["auth_ok"] = False
-            logger.warning("CFD getFollowPortfolios all: html_redirect")
+            logger.warning("CFD getFollowPortfolios all: auth failure code=%s", code)
         elif result.get("status") == 200 and code in ("00000", "200", "0"):
             _status["auth_ok"] = True
             details = (result.get("data") or {}).get("portfolioDetails") or []
