@@ -436,7 +436,7 @@ def _rebuild_trader_summary(name: str) -> dict:
         "all_time_pnl": round(all_time_pnl, 4),
         "open_positions_pnl": ts.get("open_pnl", 0.0),
         "pushed_at": tc["pushed_at"],
-        "has_data": tc["history_raw"] is not None or ts.get("balance", 0) > 0,
+        "has_data": tc["history_raw"] is not None or ts.get("balance", 0) > 0 or ts.get("investment", 0) > 0,
     }
     tc["summary"] = summary
     tc["trades"] = trades

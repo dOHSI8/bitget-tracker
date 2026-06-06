@@ -447,11 +447,14 @@ async def _fetch_futures_balance(page, push_fn: Callable, trader_name: str, pid:
     # (method, endpoint, params)
     # GET probes send params as query string; POST probes send as JSON body.
     probes = [
-        ("POST", "/v1/trace/future/trace/getFollowPortfolios",   {"portfolioId": pid}),
-        ("POST", "/v1/trace/future/trace/getFollowPortfolios",   {"followPortfolioId": pid}),
-        ("GET",  "/api/v2/copy/mix-follower/settings",           {"portfolioId": pid}),
-        ("GET",  "/api/v2/copy/mix-follower/query-settings",     {"portfolioId": pid}),
-        ("GET",  "/api/v2/copy/mix-follower/account",            {"portfolioId": pid}),
+        ("POST", "/v1/trace/future/trace/getFollowPortfolios",
+         {"portfolioId": pid}),
+        ("POST", "/v1/trace/future/trace/getFollowPortfolios",
+         {"followPortfolioId": pid}),
+        ("POST", "/v1/trace/future/trace/getFollowPortfolios",
+         {"portfolioId": pid, "productType": "USDT-FUTURES"}),
+        ("POST", "/v1/trace/future/trace/getFollowOpenPosition",
+         {"portfolioId": pid}),
     ]
     results = []
     for method, ep, params in probes:
@@ -482,14 +485,29 @@ async def _fetch_futures_balance(page, push_fn: Callable, trader_name: str, pid:
                         trader_name, ep_short, result.get("status"), code,
                         result.get("data_keys"), result.get("error"))
             if result.get("error") == "html_redirect":
-                _status["auth_ok"] = False
+                # Don't flip auth_ok here — some probe endpoints are legitimately
+                # Cloudflare-blocked regardless of cookie health. auth_ok is set
+                # only by the CFD history poll which uses a confirmed working endpoint.
                 continue
             if result.get("status") == 200 and code in ("00000", "200", "0"):
                 _status["auth_ok"] = True
-                data = result.get("data") or {}
+                raw_data = result.get("data")
+                data = raw_data or {}
                 details = data.get("portfolioDetails") if isinstance(data, dict) else None
+                # open-position list — extract unrealized PnL as open_pnl
+                pos_list = (data if isinstance(data, list) else
+                            data.get("list") or data.get("rows") or []) if raw_data else []
                 if isinstance(details, list) and details:
                     push_fn("copy_details", details[0], trader_name)
+                    _status["scrapes"] += 1
+                    _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+                    _status[f"futures_balance_{trader_name}"] = results
+                    break  # found data, stop probing
+                elif isinstance(pos_list, list) and pos_list:
+                    total_upl = sum(float(p.get("profit") or p.get("unrealizedPnl") or
+                                         p.get("unrealizedPL") or 0) for p in pos_list
+                                    if isinstance(p, dict))
+                    push_fn("copy_details", {"floatProfit": total_upl}, trader_name)
                     _status["scrapes"] += 1
                     _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
                     _status[f"futures_balance_{trader_name}"] = results
