@@ -20,29 +20,74 @@ logger = logging.getLogger(__name__)
 
 BKK = timezone(timedelta(hours=7))
 SETTINGS_FILE = Path(os.environ.get("SETTINGS_PATH", "settings.json"))
-COOKIES_FILE = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
+COOKIES_FILE  = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
+TRADERS_FILE  = Path(os.environ.get("TRADERS_PATH", "traders.json"))
 
-# Parse TRADERS env var: "DKTrading:1443199880395776000,Futures:1427930164156649472:futures"
-# Format: "Name:portfolioId[:type]"  type = "cfd" (default) or "futures"
-TRADER_IDS: dict[str, str] = {}    # {name: portfolioId}
-TRADER_TYPES: dict[str, str] = {}  # {name: "cfd"/"futures"}
+_BALANCE_PATS = ("balance", "equity", "totalbal", "totalequity",
+                 "totalasset", "accountval", "worth", "asset")
 
-_TRADERS_ENV = os.environ.get("TRADERS", "")
-if _TRADERS_ENV:
-    for _item in _TRADERS_ENV.split(","):
-        _parts = _item.strip().split(":")
-        if len(_parts) >= 2:
-            _n    = _parts[0].strip()
-            _p    = _parts[1].strip()
-            _type = _parts[2].strip() if len(_parts) >= 3 else "cfd"
-            TRADER_IDS[_n] = _p
-            TRADER_TYPES[_n] = _type
-else:
-    _n0 = os.environ.get("TRADER_NAME", "DKTrading")
-    TRADER_IDS[_n0] = os.environ.get("PORTFOLIO_ID", "1443199880395776000")
-    TRADER_TYPES[_n0] = "cfd"
 
-_DEFAULT_TRADER = next(iter(TRADER_IDS), "DKTrading")
+# ── Dynamic traders list ──────────────────────────────────────────────────────
+# Stored in traders.json (runtime); falls back to TRADERS env var on startup.
+# Add/remove traders via dashboard without redeploying.
+
+def _parse_traders_env() -> list[dict]:
+    result: list[dict] = []
+    env = os.environ.get("TRADERS", "")
+    if env:
+        for item in env.split(","):
+            parts = item.strip().split(":")
+            if len(parts) >= 2:
+                result.append({
+                    "name": parts[0].strip(),
+                    "id":   parts[1].strip(),
+                    "type": parts[2].strip() if len(parts) >= 3 else "cfd",
+                })
+    else:
+        result.append({
+            "name": os.environ.get("TRADER_NAME", "DKTrading"),
+            "id":   os.environ.get("PORTFOLIO_ID", "1443199880395776000"),
+            "type": "cfd",
+        })
+    return result
+
+
+def _load_traders_list() -> list[dict]:
+    if TRADERS_FILE.exists():
+        try:
+            data = json.loads(TRADERS_FILE.read_text())
+            entries = data.get("traders", [])
+            if entries:
+                return entries
+        except (json.JSONDecodeError, OSError):
+            pass
+    return _parse_traders_env()
+
+
+def _save_traders_list(traders: list[dict]) -> None:
+    TRADERS_FILE.write_text(json.dumps({"traders": traders}))
+
+
+# Module-level mutable list — the single source of truth for main.py
+_traders_list: list[dict] = _load_traders_list()
+
+
+def _trader_names() -> list[str]:
+    return [t["name"] for t in _traders_list]
+
+def _trader_id(name: str) -> str:
+    for t in _traders_list:
+        if t["name"] == name:
+            return t["id"]
+    return ""
+
+def _trader_type(name: str) -> str:
+    for t in _traders_list:
+        if t["name"] == name:
+            return t.get("type", "cfd")
+    return "cfd"
+
+_DEFAULT_TRADER = _traders_list[0]["name"] if _traders_list else "DKTrading"
 
 _BALANCE_PATS = ("balance", "equity", "totalbal", "totalequity",
                  "totalasset", "accountval", "worth", "asset")
@@ -352,8 +397,8 @@ def _rebuild_trader_summary(name: str) -> dict:
 
     summary = {
         "name": name,
-        "type": TRADER_TYPES.get(name, "cfd"),
-        "portfolio_id": TRADER_IDS.get(name, ""),
+        "type": _trader_type(name),
+        "portfolio_id": _trader_id(name),
         "balance": ts.get("balance", 0.0),
         "investment": ts.get("investment", 0.0),
         "daily_pnl": round(daily_pnl, 4),
@@ -376,7 +421,7 @@ def _rebuild_summary() -> None:
     total_all_time_pnl = 0.0
     total_open_pnl = 0.0
 
-    for name in TRADER_IDS:
+    for name in _trader_names():
         s = _rebuild_trader_summary(name)
         all_trades.extend(_tc(name)["trades"] or [])
         total_balance += s["balance"]
@@ -405,7 +450,7 @@ def _rebuild_summary() -> None:
 
     logger.info(
         "MT5 rebuilt: traders=%d daily_pnl=%.4f all_time=%.4f balance=%.2f",
-        len(TRADER_IDS), total_daily_pnl, total_all_time_pnl, total_balance,
+        len(_traders_list), total_daily_pnl, total_all_time_pnl, total_balance,
     )
 
 
@@ -458,7 +503,7 @@ async def get_mt5():
 @app.get("/api/mt5/traders")
 async def get_mt5_traders():
     summaries = []
-    for name in TRADER_IDS:
+    for name in _trader_names():
         tc = _tc(name)
         if tc["summary"] is None:
             _rebuild_trader_summary(name)
@@ -485,7 +530,7 @@ async def get_mt5_history():
 async def get_mt5_debug():
     pos_raw = _mt5["positions_raw"]
     traders_debug = {}
-    for name in TRADER_IDS:
+    for name in _trader_names():
         tc = _tc(name)
         hist_raw = tc["history_raw"]
         extracted_hist = _extract_history_rows(hist_raw)
@@ -523,7 +568,7 @@ async def get_sniffs():
 async def get_mt5_raw():
     return {
         "positions": _mt5["positions_raw"],
-        "traders": {name: {"history": _tc(name)["history_raw"]} for name in TRADER_IDS},
+        "traders": {name: {"history": _tc(name)["history_raw"]} for name in _trader_names()},
         "balance": _mt5["balance_raw"],
     }
 
@@ -542,7 +587,7 @@ async def post_settings(request: Request):
     if "investment" in body:
         _settings["investment"] = round(float(body["investment"]), 2)
     _save_settings(_settings)
-    if any(_tc(n)["history_raw"] is not None for n in TRADER_IDS):
+    if any(_tc(n)["history_raw"] is not None for n in _trader_names()):
         _rebuild_summary()
     return _settings
 
@@ -583,6 +628,54 @@ async def get_widget():
         "updated_at": pushed_at or datetime.now(BKK).strftime("%H:%M"),
         "stale": stale,
     }
+
+
+# ── Trader management endpoints ──────────────────────────────────────────────
+
+@app.get("/api/traders")
+async def list_traders():
+    return _traders_list
+
+
+@app.post("/api/traders")
+async def add_trader(request: Request):
+    global _traders_list, _DEFAULT_TRADER
+    body = await request.json()
+    name  = str(body.get("name", "")).strip()
+    pid   = str(body.get("id", "")).strip()
+    ttype = str(body.get("type", "cfd")).strip().lower()
+    if not name or not pid:
+        return {"ok": False, "error": "name and id are required"}
+    if ttype not in ("cfd", "futures"):
+        ttype = "cfd"
+    if any(t["name"] == name for t in _traders_list):
+        return {"ok": False, "error": f"Trader '{name}' already exists"}
+    _traders_list.append({"name": name, "id": pid, "type": ttype})
+    _save_traders_list(_traders_list)
+    if not _DEFAULT_TRADER:
+        _DEFAULT_TRADER = name
+    logger.info("Trader added: name=%s id=%s type=%s", name, pid, ttype)
+    return {"ok": True, "traders": _traders_list}
+
+
+@app.delete("/api/traders/{name}")
+async def remove_trader(name: str):
+    global _traders_list
+    before = len(_traders_list)
+    _traders_list = [t for t in _traders_list if t["name"] != name]
+    if len(_traders_list) == before:
+        return {"ok": False, "error": f"Trader '{name}' not found"}
+    # Clean up in-memory cache for removed trader
+    _traders_cache.pop(name, None)
+    _settings.get("traders", {}).pop(name, None)
+    _save_traders_list(_traders_list)
+    _save_settings(_settings)
+    logger.info("Trader removed: name=%s", name)
+    try:
+        _rebuild_summary()
+    except Exception:
+        pass
+    return {"ok": True, "traders": _traders_list}
 
 
 # ── Browser poller endpoints ─────────────────────────────────────────────────

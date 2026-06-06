@@ -12,35 +12,7 @@ BKK = timezone(timedelta(hours=7))
 BITGET_BASE = "https://www.bitget.com"
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SEC", "120"))
 COOKIES_FILE = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
-
-# ── Parse TRADERS env var ─────────────────────────────────────────────────────
-# Format: "Name:portfolioId[:type],..."  where type = "cfd" (default) or "futures"
-# Example: "DKTrading:1443199880395776000,Futures:1427930164156649472:futures"
-
-_TRADERS: dict[str, str] = {}       # {name: portfolioId}
-_TRADER_TYPES: dict[str, str] = {}  # {name: "cfd" | "futures"}
-
-_TRADERS_ENV = os.environ.get("TRADERS", "")
-if _TRADERS_ENV:
-    for _item in _TRADERS_ENV.split(","):
-        _parts = _item.strip().split(":")
-        if len(_parts) >= 2:
-            _name = _parts[0].strip()
-            _pid  = _parts[1].strip()
-            _type = _parts[2].strip() if len(_parts) >= 3 else "cfd"
-            _TRADERS[_name] = _pid
-            _TRADER_TYPES[_name] = _type
-else:
-    _name0 = os.environ.get("TRADER_NAME", "DKTrading")
-    _TRADERS[_name0] = os.environ.get("PORTFOLIO_ID", "1443199880395776000")
-    _TRADER_TYPES[_name0] = "cfd"
-
-# Reverse lookup: portfolioId → trader name
-_pid_to_name: dict[str, str] = {pid: name for name, pid in _TRADERS.items()}
-
-# First CFD portfolio ID (used for the positions probe)
-_cfd_pids = [p for n, p in _TRADERS.items() if _TRADER_TYPES.get(n) == "cfd"]
-PORTFOLIO_ID = _cfd_pids[0] if _cfd_pids else next(iter(_TRADERS.values()), "")
+TRADERS_FILE = Path(os.environ.get("TRADERS_PATH", "traders.json"))
 
 CHROMIUM_ARGS = [
     "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
@@ -68,15 +40,51 @@ _status = {
 }
 
 
+def _load_traders() -> tuple[dict[str, str], dict[str, str]]:
+    """Load traders each poll cycle so runtime changes (add/remove via dashboard) take effect.
+    Returns (traders {name: portfolioId}, types {name: "cfd"|"futures"}).
+    Priority: traders.json  >  TRADERS env var  >  legacy PORTFOLIO_ID env var.
+    """
+    if TRADERS_FILE.exists():
+        try:
+            data = json.loads(TRADERS_FILE.read_text())
+            entries = data.get("traders", [])
+            if entries:
+                traders = {t["name"]: t["id"] for t in entries}
+                types   = {t["name"]: t.get("type", "cfd") for t in entries}
+                return traders, types
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
+
+    traders: dict[str, str] = {}
+    types:   dict[str, str] = {}
+    env = os.environ.get("TRADERS", "")
+    if env:
+        for item in env.split(","):
+            parts = item.strip().split(":")
+            if len(parts) >= 2:
+                name  = parts[0].strip()
+                pid   = parts[1].strip()
+                ttype = parts[2].strip() if len(parts) >= 3 else "cfd"
+                traders[name] = pid
+                types[name]   = ttype
+    else:
+        name0 = os.environ.get("TRADER_NAME", "DKTrading")
+        traders[name0] = os.environ.get("PORTFOLIO_ID", "1443199880395776000")
+        types[name0]   = "cfd"
+    return traders, types
+
+
 def get_status() -> dict:
     cookie_str = _load_cookie_string()
+    traders, trader_types = _load_traders()
     return {
         **_status,
         "has_cookie": bool(cookie_str),
         "cookie_preview": (cookie_str[:40] + "...") if len(cookie_str) > 40 else cookie_str,
         "poll_interval_sec": POLL_INTERVAL,
-        "traders": list(_TRADERS.keys()),
-        "trader_types": _TRADER_TYPES,
+        "traders": list(traders.keys()),
+        "trader_types": trader_types,
     }
 
 
@@ -129,9 +137,16 @@ async def start_poller(push_fn: Callable):
             await asyncio.sleep(10)
             continue
 
+        # Reload traders each cycle — picks up any add/remove done via dashboard
+        traders, trader_types = _load_traders()
+        if not traders:
+            _status["last_error"] = "No traders configured"
+            await asyncio.sleep(30)
+            continue
+
         _status["last_error"] = None
         try:
-            await _poll_once(_counted_push, cookie_str)
+            await _poll_once(_counted_push, cookie_str, traders, trader_types)
         except Exception as e:
             logger.error("Poll cycle crashed: %s", e)
             _status["last_error"] = f"Poll error: {e}"
@@ -141,7 +156,8 @@ async def start_poller(push_fn: Callable):
         await asyncio.sleep(POLL_INTERVAL)
 
 
-async def _poll_once(push_fn: Callable, cookie_str: str):
+async def _poll_once(push_fn: Callable, cookie_str: str,
+                     traders: dict[str, str], trader_types: dict[str, str]):
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
@@ -173,8 +189,8 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
             except Exception as e:
                 logger.info("About nav: %s", e)
 
-            await _active_poll(page, push_fn)
-            await _fetch_balance(page, push_fn)
+            await _active_poll(page, push_fn, traders, trader_types)
+            await _fetch_balance(page, push_fn, traders, trader_types)
 
             logger.info("Poll cycle complete — closing browser")
         finally:
@@ -183,17 +199,17 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
 
 # ── History polling ───────────────────────────────────────────────────────────
 
-async def _active_poll(page, push_fn: Callable):
-    logger.info("Polling APIs via page.evaluate...")
+async def _active_poll(page, push_fn: Callable,
+                       traders: dict[str, str], trader_types: dict[str, str]):
+    logger.info("Polling APIs via page.evaluate... traders=%s", list(traders.keys()))
 
-    # ── CFD open positions probe (global, usually 403 but kept for discovery) ──
-    if PORTFOLIO_ID:
+    # CFD open-positions probe (usually 403; kept for discovery)
+    cfd_pids = [p for n, p in traders.items() if trader_types.get(n, "cfd") == "cfd"]
+    if cfd_pids:
+        pid0 = cfd_pids[0]
         pos_probes = []
-        for label, body in [
-            ("empty",          {}),
-            ("portfolioId",    {"portfolioId": PORTFOLIO_ID}),
-            ("followId",       {"followPortfolioId": PORTFOLIO_ID}),
-        ]:
+        for label, body in [("empty", {}), ("portfolioId", {"portfolioId": pid0}),
+                             ("followId", {"followPortfolioId": pid0})]:
             try:
                 result = await page.evaluate("""async ([body]) => {
                     try {
@@ -210,11 +226,10 @@ async def _active_poll(page, push_fn: Callable):
                     } catch(e) { return {status: 0, error: String(e)}; }
                 }""", [body])
                 code = result.get("code") if isinstance(result, dict) else None
-                entry = {"body": label, "status": result.get("status"), "code": code,
-                         "error": result.get("error"), "data_keys": result.get("data_keys")}
-                pos_probes.append(entry)
+                pos_probes.append({"body": label, "status": result.get("status"),
+                                   "code": code, "error": result.get("error")})
                 if isinstance(result, dict) and result.get("status") == 200 and code in ("00000", "200", "0"):
-                    logger.info("CFD positions found body=%s keys=%s", label, result.get("data_keys"))
+                    logger.info("CFD positions found body=%s", label)
                     push_fn("positions", result.get("data") or {})
                     break
             except Exception as ex:
@@ -222,10 +237,10 @@ async def _active_poll(page, push_fn: Callable):
         _status["last_pos_response"] = pos_probes[0] if pos_probes else {}
         _status["last_pos_probes"] = pos_probes
 
-    # ── History per trader, branching on type ────────────────────────────────
-    for trader_name, pid in _TRADERS.items():
-        ttype = _TRADER_TYPES.get(trader_name, "cfd")
-        logger.info("Polling history: trader=%s type=%s pid=%s", trader_name, ttype, pid)
+    # History per trader, branching on type
+    for trader_name, pid in traders.items():
+        ttype = trader_types.get(trader_name, "cfd")
+        logger.info("Polling history: trader=%s type=%s", trader_name, ttype)
         if ttype == "futures":
             await _poll_futures_history(page, push_fn, trader_name, pid)
         else:
@@ -255,8 +270,9 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
         logger.info("CFD history[%s]: HTTP %s code=%s err=%s",
                     trader_name, hist.get("status"), api_code, hist.get("error"))
         _status["last_hist_response"] = {
-            "trader": trader_name, "type": "cfd", "http": hist.get("status"),
-            "code": api_code, "msg": api_msg, "error": hist.get("error"),
+            "trader": trader_name, "type": "cfd",
+            "http": hist.get("status"), "code": api_code,
+            "msg": api_msg, "error": hist.get("error"),
         }
         if hist.get("status") == 200 and api_code in ("00000", "200", "0"):
             _status["auth_ok"] = True
@@ -268,15 +284,11 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
 
 
 async def _poll_futures_history(page, push_fn: Callable, trader_name: str, pid: str):
-    """Probe multiple endpoint patterns for futures copy trading history."""
     probes = [
-        # Most likely — mirrors the MT5/CFD pattern exactly
         ("/v1/trace/future/trace/positionHistory",
          {"portfolioId": pid, "pageNo": 1, "pageSize": 50}),
-        # Bitget v2 mix (USDT perpetual) follower history
         ("/api/v2/copy/mix-follower/history-orders",
          {"portfolioId": pid, "pageNo": "1", "pageSize": "50"}),
-        # Alternative v1 futures path
         ("/v1/copy/futures/follow/closePosition/list",
          {"portfolioId": pid, "pageNo": 1, "pageSize": 50}),
     ]
@@ -311,7 +323,7 @@ async def _poll_futures_history(page, push_fn: Callable, trader_name: str, pid: 
                 _status["auth_ok"] = True
                 push_fn("history", result["data"], trader_name)
                 _status[f"futures_hist_{trader_name}"] = results
-                return  # found working endpoint
+                return
         except Exception as e:
             ep_short = ep.split("/")[-1]
             logger.warning("Futures history[%s] %s error: %s", trader_name, ep_short, e)
@@ -321,9 +333,10 @@ async def _poll_futures_history(page, push_fn: Callable, trader_name: str, pid: 
 
 # ── Balance / portfolio polling ───────────────────────────────────────────────
 
-async def _fetch_balance(page, push_fn: Callable):
-    cfd_traders   = {n: p for n, p in _TRADERS.items() if _TRADER_TYPES.get(n, "cfd") == "cfd"}
-    fut_traders   = {n: p for n, p in _TRADERS.items() if _TRADER_TYPES.get(n, "cfd") == "futures"}
+async def _fetch_balance(page, push_fn: Callable,
+                         traders: dict[str, str], trader_types: dict[str, str]):
+    cfd_traders = {n: p for n, p in traders.items() if trader_types.get(n, "cfd") == "cfd"}
+    fut_traders = {n: p for n, p in traders.items() if trader_types.get(n, "cfd") == "futures"}
 
     if cfd_traders:
         await _fetch_cfd_balances(page, push_fn, cfd_traders)
@@ -333,10 +346,10 @@ async def _fetch_balance(page, push_fn: Callable):
 
 
 async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
-    """Fetch balance for CFD traders via getFollowPortfolios (all-at-once, then per-trader)."""
     pid_set = set(cfd_traders.values())
+    pid_to_name = {p: n for n, p in cfd_traders.items()}
 
-    # Try all-at-once first (empty body — may return all CFD portfolios)
+    # Try all-at-once first
     try:
         result = await page.evaluate("""async () => {
             try {
@@ -351,14 +364,13 @@ async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
                 return {status: r.status, code: j?.code, data: j?.data};
             } catch(e) { return {status: 0, error: String(e)}; }
         }""")
-
         code = result.get("code") if isinstance(result, dict) else None
         _status["last_balance_probes"] = {"getFollowPortfolios_all": {
             "http": result.get("status"), "code": code, "error": result.get("error")}}
 
         if result.get("error") == "html_redirect":
             _status["auth_ok"] = False
-            logger.warning("CFD getFollowPortfolios all: html_redirect — cookie expired or CF blocked")
+            logger.warning("CFD getFollowPortfolios all: html_redirect")
         elif result.get("status") == 200 and code in ("00000", "200", "0"):
             _status["auth_ok"] = True
             details = (result.get("data") or {}).get("portfolioDetails") or []
@@ -367,9 +379,9 @@ async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
                 if not isinstance(portfolio, dict):
                     continue
                 pid = str(portfolio.get("portfolioId") or portfolio.get("followPortfolioId") or "")
-                trader_name = _pid_to_name.get(pid)
-                if trader_name and pid in pid_set:
-                    logger.info("CFD getFollowPortfolios all: matched trader=%s balance=%s",
+                trader_name = pid_to_name.get(pid)
+                if trader_name:
+                    logger.info("CFD getFollowPortfolios all: matched %s balance=%s",
                                 trader_name, portfolio.get("balance"))
                     push_fn("copy_details", portfolio, trader_name)
                     matched += 1
@@ -377,13 +389,11 @@ async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
                 _status["scrapes"] += 1
                 _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
                 return
-            logger.warning("CFD getFollowPortfolios all: %d details, none matched pids %s",
-                           len(details), list(pid_set))
     except Exception as e:
         logger.warning("CFD getFollowPortfolios all error: %s", e)
 
-    # Fallback: per-trader
-    logger.info("CFD: falling back to per-trader getFollowPortfolios")
+    # Per-trader fallback
+    logger.info("CFD: per-trader getFollowPortfolios fallback")
     for trader_name, pid in cfd_traders.items():
         try:
             result = await page.evaluate("""async (pid) => {
@@ -399,41 +409,27 @@ async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
                     return {status: r.status, code: j?.code, data: j?.data};
                 } catch(e) { return {status: 0, error: String(e)}; }
             }""", pid)
-
             code = result.get("code") if isinstance(result, dict) else None
             _status["last_balance_probes"][f"cfd_{trader_name}"] = {
                 "http": result.get("status"), "code": code, "error": result.get("error")}
-
             if result.get("error") == "html_redirect":
                 _status["auth_ok"] = False
             elif result.get("status") == 200 and code in ("00000", "200", "0"):
                 _status["auth_ok"] = True
                 details = (result.get("data") or {}).get("portfolioDetails") or []
                 if details and isinstance(details[0], dict):
-                    portfolio = details[0]
-                    logger.info("CFD getFollowPortfolios[%s]: balance=%s investment=%s",
-                                trader_name, portfolio.get("balance"), portfolio.get("totalInvestment"))
-                    push_fn("copy_details", portfolio, trader_name)
+                    push_fn("copy_details", details[0], trader_name)
                     _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
                     _status["scrapes"] += 1
-            else:
-                logger.warning("CFD getFollowPortfolios[%s] failed: http=%s code=%s",
-                               trader_name, result.get("status"), code)
         except Exception as e:
             logger.warning("CFD getFollowPortfolios[%s] error: %s", trader_name, e)
 
 
 async def _fetch_futures_balance(page, push_fn: Callable, trader_name: str, pid: str):
-    """Probe multiple endpoint patterns for futures copy trading portfolio balance."""
     probes = [
-        # Most likely — mirrors MT5/CFD pattern
-        ("/v1/trace/future/trace/getFollowPortfolios",
-         {"portfolioId": pid}),
-        # Bitget v2 mix follower settings / account info
-        ("/api/v2/copy/mix-follower/settings",
-         {"portfolioId": pid}),
-        ("/api/v2/copy/mix-follower/query-settings",
-         {"portfolioId": pid}),
+        ("/v1/trace/future/trace/getFollowPortfolios", {"portfolioId": pid}),
+        ("/api/v2/copy/mix-follower/settings",         {"portfolioId": pid}),
+        ("/api/v2/copy/mix-follower/query-settings",   {"portfolioId": pid}),
     ]
     results = []
     for ep, body in probes:
@@ -454,9 +450,6 @@ async def _fetch_futures_balance(page, push_fn: Callable, trader_name: str, pid:
             }""", [ep, body])
             code = result.get("code") if isinstance(result, dict) else None
             ep_short = ep.split("/")[-1]
-            logger.info("Futures balance[%s] %s: HTTP %s code=%s keys=%s err=%s",
-                        trader_name, ep_short, result.get("status"), code,
-                        result.get("data_keys"), result.get("error"))
             results.append({"ep": ep_short, "http": result.get("status"), "code": code,
                              "error": result.get("error"), "data_keys": result.get("data_keys")})
             if result.get("error") == "html_redirect":
@@ -465,19 +458,16 @@ async def _fetch_futures_balance(page, push_fn: Callable, trader_name: str, pid:
             if result.get("status") == 200 and code in ("00000", "200", "0"):
                 _status["auth_ok"] = True
                 data = result.get("data") or {}
-                # Data might be a dict directly, or wrapped in portfolioDetails
                 details = data.get("portfolioDetails")
                 if isinstance(details, list) and details:
                     push_fn("copy_details", details[0], trader_name)
                 elif isinstance(data, dict) and data:
                     push_fn("copy_details", data, trader_name)
-                _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
                 _status["scrapes"] += 1
+                _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
                 _status[f"futures_balance_{trader_name}"] = results
                 return
         except Exception as e:
             ep_short = ep.split("/")[-1]
-            logger.warning("Futures balance[%s] %s error: %s", trader_name, ep_short, e)
             results.append({"ep": ep_short, "error": str(e)})
     _status[f"futures_balance_{trader_name}"] = results
-    logger.warning("Futures balance[%s]: all endpoints failed — check debug", trader_name)

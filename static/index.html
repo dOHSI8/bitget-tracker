@@ -261,7 +261,10 @@
 
     <!-- By Trader breakdown -->
     <div id="traders-section" style="display:none;margin-top:4px">
-      <div style="margin:0 12px 8px;font-size:11px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted)">By Trader</div>
+      <div style="margin:0 12px 8px;display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted)">By Trader</div>
+        <button onclick="openTradersModal()" style="font-size:12px;color:var(--green);background:none;border:none;cursor:pointer;padding:0;font-weight:600">+ Manage</button>
+      </div>
       <div id="traders-cards"></div>
     </div>
 
@@ -353,6 +356,36 @@
     <div class="modal-actions">
       <button class="btn-cancel" id="modal-cancel">Cancel</button>
       <button class="btn-save" id="modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manage Traders modal -->
+<div class="modal-overlay" id="traders-modal">
+  <div class="modal-box" style="width:min(420px,92vw)">
+    <div class="modal-title">Manage Traders</div>
+    <div id="traders-modal-list" style="margin-bottom:14px"></div>
+    <hr style="border:none;border-top:1px solid var(--border);margin:0 0 14px">
+    <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:10px">Add Trader</div>
+    <div class="modal-field">
+      <label>Display Name</label>
+      <input type="text" id="new-trader-name" placeholder="e.g. XauKingScalp" />
+    </div>
+    <div class="modal-field">
+      <label>Portfolio ID (from URL)</label>
+      <input type="text" id="new-trader-id" inputmode="numeric" placeholder="e.g. 1433276980578508800" />
+    </div>
+    <div class="modal-field">
+      <label>Type</label>
+      <select id="new-trader-type" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:16px;outline:none">
+        <option value="cfd">CFD (MT5)</option>
+        <option value="futures">Futures</option>
+      </select>
+    </div>
+    <div id="trader-add-status" style="font-size:12px;margin-bottom:10px;display:none"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="document.getElementById('traders-modal').classList.remove('active')">Close</button>
+      <button class="btn-save" id="trader-add-btn">Add</button>
     </div>
   </div>
 </div>
@@ -750,6 +783,81 @@
 
   updatePollerBar();
   setInterval(updatePollerBar, 15_000);
+
+  // ── Trader management modal ─────────────────────────────────────────────
+  const tradersModal = document.getElementById('traders-modal');
+  tradersModal.addEventListener('click', e => { if (e.target === tradersModal) tradersModal.classList.remove('active'); });
+
+  async function openTradersModal() {
+    document.getElementById('trader-add-status').style.display = 'none';
+    document.getElementById('new-trader-name').value = '';
+    document.getElementById('new-trader-id').value = '';
+    document.getElementById('new-trader-type').value = 'cfd';
+    await refreshTradersModalList();
+    tradersModal.classList.add('active');
+  }
+
+  async function refreshTradersModalList() {
+    const traders = await fetch('/api/traders').then(r => r.json());
+    const el = document.getElementById('traders-modal-list');
+    if (!traders || !traders.length) {
+      el.innerHTML = '<div class="empty">No traders configured</div>';
+      return;
+    }
+    el.innerHTML = traders.map(t => {
+      const badge = t.type === 'futures'
+        ? `<span style="font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,0.15);color:var(--amber)">FUTURES</span>`
+        : `<span style="font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;background:rgba(0,196,122,0.12);color:var(--green)">CFD</span>`;
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <span style="font-weight:600;font-size:13px">${t.name}</span>
+          <span style="margin-left:6px">${badge}</span>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">${t.id}</div>
+        </div>
+        <button onclick="removeTrader('${t.name}')" style="background:rgba(255,77,77,0.1);border:1px solid rgba(255,77,77,0.3);color:var(--red);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">Remove</button>
+      </div>`;
+    }).join('');
+  }
+
+  async function removeTrader(name) {
+    if (!confirm(`Remove ${name}? Their cached data will be cleared.`)) return;
+    const res = await fetch(`/api/traders/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(r => r.json());
+    if (res.ok) {
+      await refreshTradersModalList();
+      fetchTraders();
+      fetchData();
+    } else {
+      alert('Error: ' + (res.error || 'unknown'));
+    }
+  }
+
+  document.getElementById('trader-add-btn').addEventListener('click', async () => {
+    const name  = document.getElementById('new-trader-name').value.trim();
+    const id    = document.getElementById('new-trader-id').value.trim();
+    const type  = document.getElementById('new-trader-type').value;
+    const status = document.getElementById('trader-add-status');
+    if (!name || !id) {
+      status.style.display = 'block';
+      status.innerHTML = '<span class="amber">Please fill in name and portfolio ID.</span>';
+      return;
+    }
+    status.style.display = 'block';
+    status.innerHTML = '<span style="color:var(--muted)">Adding…</span>';
+    const res = await fetch('/api/traders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, id, type }),
+    }).then(r => r.json());
+    if (res.ok) {
+      status.innerHTML = `<span class="green">${name} added! Data will appear after the next poll (~2 min).</span>`;
+      document.getElementById('new-trader-name').value = '';
+      document.getElementById('new-trader-id').value = '';
+      await refreshTradersModalList();
+      fetchTraders();
+    } else {
+      status.innerHTML = `<span class="red">Error: ${res.error || 'unknown'}</span>`;
+    }
+  });
 </script>
 </body>
 </html>
