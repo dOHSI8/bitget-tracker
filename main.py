@@ -22,19 +22,25 @@ BKK = timezone(timedelta(hours=7))
 SETTINGS_FILE = Path(os.environ.get("SETTINGS_PATH", "settings.json"))
 COOKIES_FILE = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
 
-# Parse TRADERS env var: "DKTrading:1443199880395776000,XauKingScalp:1433276980578508800"
+# Parse TRADERS env var: "DKTrading:1443199880395776000,Futures:1427930164156649472:futures"
+# Format: "Name:portfolioId[:type]"  type = "cfd" (default) or "futures"
+TRADER_IDS: dict[str, str] = {}    # {name: portfolioId}
+TRADER_TYPES: dict[str, str] = {}  # {name: "cfd"/"futures"}
+
 _TRADERS_ENV = os.environ.get("TRADERS", "")
 if _TRADERS_ENV:
-    TRADER_IDS: dict[str, str] = {}
     for _item in _TRADERS_ENV.split(","):
-        _item = _item.strip()
-        if ":" in _item:
-            _n, _p = _item.split(":", 1)
-            TRADER_IDS[_n.strip()] = _p.strip()
+        _parts = _item.strip().split(":")
+        if len(_parts) >= 2:
+            _n    = _parts[0].strip()
+            _p    = _parts[1].strip()
+            _type = _parts[2].strip() if len(_parts) >= 3 else "cfd"
+            TRADER_IDS[_n] = _p
+            TRADER_TYPES[_n] = _type
 else:
-    TRADER_IDS = {
-        os.environ.get("TRADER_NAME", "DKTrading"): os.environ.get("PORTFOLIO_ID", "1443199880395776000")
-    }
+    _n0 = os.environ.get("TRADER_NAME", "DKTrading")
+    TRADER_IDS[_n0] = os.environ.get("PORTFOLIO_ID", "1443199880395776000")
+    TRADER_TYPES[_n0] = "cfd"
 
 _DEFAULT_TRADER = next(iter(TRADER_IDS), "DKTrading")
 
@@ -346,6 +352,7 @@ def _rebuild_trader_summary(name: str) -> dict:
 
     summary = {
         "name": name,
+        "type": TRADER_TYPES.get(name, "cfd"),
         "portfolio_id": TRADER_IDS.get(name, ""),
         "balance": ts.get("balance", 0.0),
         "investment": ts.get("investment", 0.0),

@@ -7,6 +7,6 @@ services:
       - key: PORT
         value: "10000"
       - key: TRADERS
-        value: "DKTrading:1443199880395776000,XauKingScalp:1433276980578508800"
+        value: "DKTrading:1443199880395776000,Futures:1427930164156649472:futures"
       - key: POLL_INTERVAL_SEC
         value: "120"

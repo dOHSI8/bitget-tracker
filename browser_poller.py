@@ -13,25 +13,34 @@ BITGET_BASE = "https://www.bitget.com"
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SEC", "120"))
 COOKIES_FILE = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
 
-# Parse TRADERS env var: "DKTrading:1443199880395776000,XauKingScalp:1433276980578508800"
+# ── Parse TRADERS env var ─────────────────────────────────────────────────────
+# Format: "Name:portfolioId[:type],..."  where type = "cfd" (default) or "futures"
+# Example: "DKTrading:1443199880395776000,Futures:1427930164156649472:futures"
+
+_TRADERS: dict[str, str] = {}       # {name: portfolioId}
+_TRADER_TYPES: dict[str, str] = {}  # {name: "cfd" | "futures"}
+
 _TRADERS_ENV = os.environ.get("TRADERS", "")
 if _TRADERS_ENV:
-    _TRADERS: dict[str, str] = {}
     for _item in _TRADERS_ENV.split(","):
-        _item = _item.strip()
-        if ":" in _item:
-            _n, _p = _item.split(":", 1)
-            _TRADERS[_n.strip()] = _p.strip()
+        _parts = _item.strip().split(":")
+        if len(_parts) >= 2:
+            _name = _parts[0].strip()
+            _pid  = _parts[1].strip()
+            _type = _parts[2].strip() if len(_parts) >= 3 else "cfd"
+            _TRADERS[_name] = _pid
+            _TRADER_TYPES[_name] = _type
 else:
-    _TRADERS = {
-        os.environ.get("TRADER_NAME", "DKTrading"): os.environ.get("PORTFOLIO_ID", "1443199880395776000")
-    }
+    _name0 = os.environ.get("TRADER_NAME", "DKTrading")
+    _TRADERS[_name0] = os.environ.get("PORTFOLIO_ID", "1443199880395776000")
+    _TRADER_TYPES[_name0] = "cfd"
 
 # Reverse lookup: portfolioId → trader name
 _pid_to_name: dict[str, str] = {pid: name for name, pid in _TRADERS.items()}
 
-# Legacy single-ID alias (used in positions probe which is still global)
-PORTFOLIO_ID = next(iter(_TRADERS.values()), "")
+# First CFD portfolio ID (used for the positions probe)
+_cfd_pids = [p for n, p in _TRADERS.items() if _TRADER_TYPES.get(n) == "cfd"]
+PORTFOLIO_ID = _cfd_pids[0] if _cfd_pids else next(iter(_TRADERS.values()), "")
 
 CHROMIUM_ARGS = [
     "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
@@ -67,6 +76,7 @@ def get_status() -> dict:
         "cookie_preview": (cookie_str[:40] + "...") if len(cookie_str) > 40 else cookie_str,
         "poll_interval_sec": POLL_INTERVAL,
         "traders": list(_TRADERS.keys()),
+        "trader_types": _TRADER_TYPES,
     }
 
 
@@ -141,7 +151,6 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
                 viewport={"width": 800, "height": 600},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             )
-
             cookies = _parse_cookie_string(cookie_str)
             if cookies:
                 await context.add_cookies(cookies)
@@ -172,21 +181,111 @@ async def _poll_once(push_fn: Callable, cookie_str: str):
             await browser.close()
 
 
+# ── History polling ───────────────────────────────────────────────────────────
+
 async def _active_poll(page, push_fn: Callable):
     logger.info("Polling APIs via page.evaluate...")
 
-    # ── Positions — global probe (not trader-specific, still 403 in most cases) ──
-    pos_probes = []
-    for label, body in [
-        ("empty",          {}),
-        ("portfolioId",    {"portfolioId": PORTFOLIO_ID}),
-        ("followId",       {"followPortfolioId": PORTFOLIO_ID}),
-        ("userId",         {"userId": PORTFOLIO_ID}),
-    ]:
+    # ── CFD open positions probe (global, usually 403 but kept for discovery) ──
+    if PORTFOLIO_ID:
+        pos_probes = []
+        for label, body in [
+            ("empty",          {}),
+            ("portfolioId",    {"portfolioId": PORTFOLIO_ID}),
+            ("followId",       {"followPortfolioId": PORTFOLIO_ID}),
+        ]:
+            try:
+                result = await page.evaluate("""async ([body]) => {
+                    try {
+                        const r = await fetch('/v1/trace/mt5/trace/getFollowOpenPosition', {
+                            method: 'POST', credentials: 'include',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body),
+                        });
+                        const text = await r.text();
+                        if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
+                        const j = JSON.parse(text);
+                        return {status: r.status, code: j?.code, msg: j?.msg,
+                                data_keys: j?.data != null ? Object.keys(Object(j.data)).slice(0,8) : null};
+                    } catch(e) { return {status: 0, error: String(e)}; }
+                }""", [body])
+                code = result.get("code") if isinstance(result, dict) else None
+                entry = {"body": label, "status": result.get("status"), "code": code,
+                         "error": result.get("error"), "data_keys": result.get("data_keys")}
+                pos_probes.append(entry)
+                if isinstance(result, dict) and result.get("status") == 200 and code in ("00000", "200", "0"):
+                    logger.info("CFD positions found body=%s keys=%s", label, result.get("data_keys"))
+                    push_fn("positions", result.get("data") or {})
+                    break
+            except Exception as ex:
+                pos_probes.append({"body": label, "error": str(ex)})
+        _status["last_pos_response"] = pos_probes[0] if pos_probes else {}
+        _status["last_pos_probes"] = pos_probes
+
+    # ── History per trader, branching on type ────────────────────────────────
+    for trader_name, pid in _TRADERS.items():
+        ttype = _TRADER_TYPES.get(trader_name, "cfd")
+        logger.info("Polling history: trader=%s type=%s pid=%s", trader_name, ttype, pid)
+        if ttype == "futures":
+            await _poll_futures_history(page, push_fn, trader_name, pid)
+        else:
+            await _poll_cfd_history(page, push_fn, trader_name, pid)
+
+    _status["last_poll"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+    _status["polls"] += 1
+
+
+async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str):
+    try:
+        hist = await page.evaluate("""async (pid) => {
+            try {
+                const r = await fetch('/v1/trace/mt5/trace/positionHistory', {
+                    method: 'POST', credentials: 'include',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({portfolioId: pid, pageNo: 1, pageSize: 50}),
+                });
+                const text = await r.text();
+                if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
+                const j = JSON.parse(text);
+                return {status: r.status, data: j};
+            } catch(e) { return {status: 0, error: String(e)}; }
+        }""", pid)
+        api_code = (hist.get("data") or {}).get("code")
+        api_msg  = (hist.get("data") or {}).get("msg")
+        logger.info("CFD history[%s]: HTTP %s code=%s err=%s",
+                    trader_name, hist.get("status"), api_code, hist.get("error"))
+        _status["last_hist_response"] = {
+            "trader": trader_name, "type": "cfd", "http": hist.get("status"),
+            "code": api_code, "msg": api_msg, "error": hist.get("error"),
+        }
+        if hist.get("status") == 200 and api_code in ("00000", "200", "0"):
+            _status["auth_ok"] = True
+            push_fn("history", hist["data"], trader_name)
+        elif hist.get("error") == "html_redirect":
+            _status["auth_ok"] = False
+    except Exception as e:
+        logger.warning("CFD history[%s] error: %s", trader_name, e)
+
+
+async def _poll_futures_history(page, push_fn: Callable, trader_name: str, pid: str):
+    """Probe multiple endpoint patterns for futures copy trading history."""
+    probes = [
+        # Most likely — mirrors the MT5/CFD pattern exactly
+        ("/v1/trace/future/trace/positionHistory",
+         {"portfolioId": pid, "pageNo": 1, "pageSize": 50}),
+        # Bitget v2 mix (USDT perpetual) follower history
+        ("/api/v2/copy/mix-follower/history-orders",
+         {"portfolioId": pid, "pageNo": "1", "pageSize": "50"}),
+        # Alternative v1 futures path
+        ("/v1/copy/futures/follow/closePosition/list",
+         {"portfolioId": pid, "pageNo": 1, "pageSize": 50}),
+    ]
+    results = []
+    for ep, body in probes:
         try:
-            result = await page.evaluate("""async ([body]) => {
+            result = await page.evaluate("""async ([ep, body]) => {
                 try {
-                    const r = await fetch('/v1/trace/mt5/trace/getFollowOpenPosition', {
+                    const r = await fetch(ep, {
                         method: 'POST', credentials: 'include',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify(body),
@@ -194,63 +293,50 @@ async def _active_poll(page, push_fn: Callable):
                     const text = await r.text();
                     if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
                     const j = JSON.parse(text);
-                    return {status: r.status, code: j?.code, msg: j?.msg,
-                            data_keys: j?.data != null ? Object.keys(Object(j.data)).slice(0, 8) : null};
+                    return {status: r.status, code: j?.code, msg: j?.msg, data: j?.data,
+                            data_keys: j?.data ? Object.keys(Object(j.data)).slice(0,8) : null};
                 } catch(e) { return {status: 0, error: String(e)}; }
-            }""", [body])
+            }""", [ep, body])
             code = result.get("code") if isinstance(result, dict) else None
-            entry = {"body": label, "status": result.get("status"), "code": code, "error": result.get("error"), "data_keys": result.get("data_keys")}
-            pos_probes.append(entry)
-            if isinstance(result, dict) and result.get("status") == 200 and code in ("00000", "200", "0"):
-                logger.info("Positions found with body=%s code=%s keys=%s", label, code, result.get("data_keys"))
-                push_fn("positions", result.get("data") or {})
-                break
-        except Exception as ex:
-            pos_probes.append({"body": label, "error": str(ex)})
-    _status["last_pos_response"] = pos_probes[0] if pos_probes else {}
-    _status["last_pos_probes"] = pos_probes
-
-    # ── History + balance history — per trader ───────────────────────────────
-    for trader_name, pid in _TRADERS.items():
-        logger.info("Polling history for trader=%s pid=%s", trader_name, pid)
-
-        try:
-            hist = await page.evaluate("""async (pid) => {
-                try {
-                    const r = await fetch('/v1/trace/mt5/trace/positionHistory', {
-                        method: 'POST', credentials: 'include',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({portfolioId: pid, pageNo: 1, pageSize: 50}),
-                    });
-                    const text = await r.text();
-                    if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
-                    const j = JSON.parse(text);
-                    return {status: r.status, data: j};
-                } catch(e) { return {status: 0, error: String(e)}; }
-            }""", pid)
-            api_code = (hist.get("data") or {}).get("code")
-            api_msg  = (hist.get("data") or {}).get("msg")
-            logger.info("History[%s]: HTTP %s api_code=%s err=%s", trader_name, hist.get("status"), api_code, hist.get("error"))
-            _status["last_hist_response"] = {
-                "trader": trader_name, "http": hist.get("status"),
-                "code": api_code, "msg": api_msg, "error": hist.get("error"),
-            }
-            if hist.get("status") == 200 and api_code in ("00000", "200", "0"):
-                _status["auth_ok"] = True
-                push_fn("history", hist["data"], trader_name)
-            elif hist.get("error") == "html_redirect":
+            ep_short = ep.split("/")[-1]
+            logger.info("Futures history[%s] %s: HTTP %s code=%s keys=%s err=%s",
+                        trader_name, ep_short, result.get("status"), code,
+                        result.get("data_keys"), result.get("error"))
+            results.append({"ep": ep_short, "http": result.get("status"), "code": code,
+                             "error": result.get("error"), "data_keys": result.get("data_keys")})
+            if result.get("error") == "html_redirect":
                 _status["auth_ok"] = False
+                continue
+            if result.get("status") == 200 and code in ("00000", "200", "0"):
+                _status["auth_ok"] = True
+                push_fn("history", result["data"], trader_name)
+                _status[f"futures_hist_{trader_name}"] = results
+                return  # found working endpoint
         except Exception as e:
-            logger.warning("Poll history error [%s]: %s", trader_name, e)
+            ep_short = ep.split("/")[-1]
+            logger.warning("Futures history[%s] %s error: %s", trader_name, ep_short, e)
+            results.append({"ep": ep_short, "error": str(e)})
+    _status[f"futures_hist_{trader_name}"] = results
 
-    _status["last_poll"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
-    _status["polls"] += 1
 
+# ── Balance / portfolio polling ───────────────────────────────────────────────
 
 async def _fetch_balance(page, push_fn: Callable):
-    # Try a single call without portfolioId — may return all followed portfolios at once.
-    # If it returns multiple portfolioDetails, match each to a trader by portfolioId.
-    # Fallback: per-trader calls.
+    cfd_traders   = {n: p for n, p in _TRADERS.items() if _TRADER_TYPES.get(n, "cfd") == "cfd"}
+    fut_traders   = {n: p for n, p in _TRADERS.items() if _TRADER_TYPES.get(n, "cfd") == "futures"}
+
+    if cfd_traders:
+        await _fetch_cfd_balances(page, push_fn, cfd_traders)
+
+    for trader_name, pid in fut_traders.items():
+        await _fetch_futures_balance(page, push_fn, trader_name, pid)
+
+
+async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
+    """Fetch balance for CFD traders via getFollowPortfolios (all-at-once, then per-trader)."""
+    pid_set = set(cfd_traders.values())
+
+    # Try all-at-once first (empty body — may return all CFD portfolios)
     try:
         result = await page.evaluate("""async () => {
             try {
@@ -268,42 +354,37 @@ async def _fetch_balance(page, push_fn: Callable):
 
         code = result.get("code") if isinstance(result, dict) else None
         _status["last_balance_probes"] = {"getFollowPortfolios_all": {
-            "http": result.get("status"), "code": code}}
+            "http": result.get("status"), "code": code, "error": result.get("error")}}
 
         if result.get("error") == "html_redirect":
             _status["auth_ok"] = False
-            logger.warning("getFollowPortfolios all: html_redirect — cookie expired or CF blocked")
+            logger.warning("CFD getFollowPortfolios all: html_redirect — cookie expired or CF blocked")
         elif result.get("status") == 200 and code in ("00000", "200", "0"):
             _status["auth_ok"] = True
-            data = result.get("data") or {}
-            details = data.get("portfolioDetails") or []
-            if details and isinstance(details, list):
-                matched = 0
-                for portfolio in details:
-                    if not isinstance(portfolio, dict):
-                        continue
-                    pid = str(portfolio.get("portfolioId") or portfolio.get("followPortfolioId") or "")
-                    trader_name = _pid_to_name.get(pid)
-                    if trader_name:
-                        logger.info("getFollowPortfolios all: matched trader=%s pid=%s balance=%s",
-                                    trader_name, pid, portfolio.get("balance"))
-                        push_fn("copy_details", portfolio, trader_name)
-                        matched += 1
-                    else:
-                        logger.info("getFollowPortfolios all: unmatched pid=%s keys=%s",
-                                    pid, list(portfolio.keys())[:6])
-                if matched > 0:
-                    _status["scrapes"] += 1
-                    _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
-                    return
-                logger.warning("getFollowPortfolios all: got %d details but none matched known pids %s",
-                               len(details), list(_pid_to_name.keys()))
+            details = (result.get("data") or {}).get("portfolioDetails") or []
+            matched = 0
+            for portfolio in details:
+                if not isinstance(portfolio, dict):
+                    continue
+                pid = str(portfolio.get("portfolioId") or portfolio.get("followPortfolioId") or "")
+                trader_name = _pid_to_name.get(pid)
+                if trader_name and pid in pid_set:
+                    logger.info("CFD getFollowPortfolios all: matched trader=%s balance=%s",
+                                trader_name, portfolio.get("balance"))
+                    push_fn("copy_details", portfolio, trader_name)
+                    matched += 1
+            if matched > 0:
+                _status["scrapes"] += 1
+                _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+                return
+            logger.warning("CFD getFollowPortfolios all: %d details, none matched pids %s",
+                           len(details), list(pid_set))
     except Exception as e:
-        logger.warning("getFollowPortfolios all error: %s", e)
+        logger.warning("CFD getFollowPortfolios all error: %s", e)
 
-    # Fallback: per-trader calls
-    logger.info("Falling back to per-trader getFollowPortfolios calls")
-    for trader_name, pid in _TRADERS.items():
+    # Fallback: per-trader
+    logger.info("CFD: falling back to per-trader getFollowPortfolios")
+    for trader_name, pid in cfd_traders.items():
         try:
             result = await page.evaluate("""async (pid) => {
                 try {
@@ -320,26 +401,83 @@ async def _fetch_balance(page, push_fn: Callable):
             }""", pid)
 
             code = result.get("code") if isinstance(result, dict) else None
-            _status["last_balance_probes"][f"getFollowPortfolios_{trader_name}"] = {
-                "http": result.get("status"), "code": code}
+            _status["last_balance_probes"][f"cfd_{trader_name}"] = {
+                "http": result.get("status"), "code": code, "error": result.get("error")}
 
             if result.get("error") == "html_redirect":
                 _status["auth_ok"] = False
             elif result.get("status") == 200 and code in ("00000", "200", "0"):
                 _status["auth_ok"] = True
-                data = result.get("data") or {}
-                details = data.get("portfolioDetails") or []
+                details = (result.get("data") or {}).get("portfolioDetails") or []
                 if details and isinstance(details[0], dict):
                     portfolio = details[0]
-                    logger.info("getFollowPortfolios[%s]: balance=%s investment=%s",
+                    logger.info("CFD getFollowPortfolios[%s]: balance=%s investment=%s",
                                 trader_name, portfolio.get("balance"), portfolio.get("totalInvestment"))
                     push_fn("copy_details", portfolio, trader_name)
                     _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
                     _status["scrapes"] += 1
-                else:
-                    logger.warning("getFollowPortfolios[%s]: no portfolioDetails", trader_name)
             else:
-                logger.warning("getFollowPortfolios[%s] failed: http=%s code=%s",
+                logger.warning("CFD getFollowPortfolios[%s] failed: http=%s code=%s",
                                trader_name, result.get("status"), code)
         except Exception as e:
-            logger.warning("getFollowPortfolios[%s] error: %s", trader_name, e)
+            logger.warning("CFD getFollowPortfolios[%s] error: %s", trader_name, e)
+
+
+async def _fetch_futures_balance(page, push_fn: Callable, trader_name: str, pid: str):
+    """Probe multiple endpoint patterns for futures copy trading portfolio balance."""
+    probes = [
+        # Most likely — mirrors MT5/CFD pattern
+        ("/v1/trace/future/trace/getFollowPortfolios",
+         {"portfolioId": pid}),
+        # Bitget v2 mix follower settings / account info
+        ("/api/v2/copy/mix-follower/settings",
+         {"portfolioId": pid}),
+        ("/api/v2/copy/mix-follower/query-settings",
+         {"portfolioId": pid}),
+    ]
+    results = []
+    for ep, body in probes:
+        try:
+            result = await page.evaluate("""async ([ep, body]) => {
+                try {
+                    const r = await fetch(ep, {
+                        method: 'POST', credentials: 'include',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                    const text = await r.text();
+                    if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
+                    const j = JSON.parse(text);
+                    return {status: r.status, code: j?.code, data: j?.data,
+                            data_keys: j?.data ? Object.keys(Object(j.data)).slice(0,8) : null};
+                } catch(e) { return {status: 0, error: String(e)}; }
+            }""", [ep, body])
+            code = result.get("code") if isinstance(result, dict) else None
+            ep_short = ep.split("/")[-1]
+            logger.info("Futures balance[%s] %s: HTTP %s code=%s keys=%s err=%s",
+                        trader_name, ep_short, result.get("status"), code,
+                        result.get("data_keys"), result.get("error"))
+            results.append({"ep": ep_short, "http": result.get("status"), "code": code,
+                             "error": result.get("error"), "data_keys": result.get("data_keys")})
+            if result.get("error") == "html_redirect":
+                _status["auth_ok"] = False
+                continue
+            if result.get("status") == 200 and code in ("00000", "200", "0"):
+                _status["auth_ok"] = True
+                data = result.get("data") or {}
+                # Data might be a dict directly, or wrapped in portfolioDetails
+                details = data.get("portfolioDetails")
+                if isinstance(details, list) and details:
+                    push_fn("copy_details", details[0], trader_name)
+                elif isinstance(data, dict) and data:
+                    push_fn("copy_details", data, trader_name)
+                _status["last_scrape"] = datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+                _status["scrapes"] += 1
+                _status[f"futures_balance_{trader_name}"] = results
+                return
+        except Exception as e:
+            ep_short = ep.split("/")[-1]
+            logger.warning("Futures balance[%s] %s error: %s", trader_name, ep_short, e)
+            results.append({"ep": ep_short, "error": str(e)})
+    _status[f"futures_balance_{trader_name}"] = results
+    logger.warning("Futures balance[%s]: all endpoints failed — check debug", trader_name)
