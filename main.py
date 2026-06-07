@@ -777,6 +777,8 @@ async def set_poller_cookie(request: Request):
         "updated": datetime.now(BKK).isoformat(),
     }))
     logger.info("Poller cookie updated (%d chars)", len(cookie))
+    from browser_poller import reset_auth_status
+    reset_auth_status()
     return {"ok": True, "length": len(cookie)}
 
 

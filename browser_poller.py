@@ -75,6 +75,12 @@ def _load_traders() -> tuple[dict[str, str], dict[str, str]]:
     return traders, types
 
 
+def reset_auth_status() -> None:
+    """Call when a new cookie is saved so stale auth_ok=False doesn't persist."""
+    _status["auth_ok"] = None
+    _status["last_error"] = None
+
+
 def get_status() -> dict:
     cookie_str = _load_cookie_string()
     traders, trader_types = _load_traders()
