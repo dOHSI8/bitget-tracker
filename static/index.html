@@ -556,13 +556,14 @@
   function fmt(n, digits = 2) {
     if (n == null) return '—';
     const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    if (n === 0) return '$' + abs;
     return (n < 0 ? '-' : '+') + '$' + abs;
   }
   function fmtBal(n) {
     if (n == null || n === 0) return '$0.00';
     return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
-  function colorClass(n) { return n >= 0 ? 'green' : 'red'; }
+  function colorClass(n) { return n > 0 ? 'green' : n < 0 ? 'red' : ''; }
 
   function startAgeTicker() {
     clearInterval(ageInterval);
@@ -733,23 +734,27 @@
       document.getElementById('daily-sub').textContent =
         todayTrades + ' trade' + (todayTrades !== 1 ? 's' : '') + ' today';
 
-      if (mt5.total_investment > 0) {
+      if (mt5.total_investment > 0 && mt5.daily_pnl !== 0) {
         const dailyRet = mt5.daily_pnl / mt5.total_investment * 100;
         const db = document.getElementById('daily-badge');
-        db.textContent = (dailyRet >= 0 ? '↑ ' : '↓ ') + Math.abs(dailyRet).toFixed(2) + '%';
-        db.className = 'trend-badge ' + (dailyRet >= 0 ? 'up' : 'down');
+        db.textContent = (dailyRet > 0 ? '↑ ' : '↓ ') + Math.abs(dailyRet).toFixed(2) + '%';
+        db.className = 'trend-badge ' + (dailyRet > 0 ? 'up' : 'down');
         db.style.display = 'inline-flex';
+      } else {
+        document.getElementById('daily-badge').style.display = 'none';
       }
 
       // Stats cards + badges
       const opEl = document.getElementById('open-pnl');
       opEl.textContent = fmt(mt5.open_positions_pnl);
       opEl.className = 'stat-val ' + colorClass(mt5.open_positions_pnl);
-      if (mt5.open_positions_pnl != null) {
+      if (mt5.open_positions_pnl != null && mt5.open_positions_pnl !== 0) {
         const ob = document.getElementById('open-pnl-badge');
-        ob.textContent = mt5.open_positions_pnl >= 0 ? '↑ Profit' : '↓ Loss';
-        ob.className = 'trend-badge ' + (mt5.open_positions_pnl >= 0 ? 'up' : 'down');
+        ob.textContent = mt5.open_positions_pnl > 0 ? '↑ Profit' : '↓ Loss';
+        ob.className = 'trend-badge ' + (mt5.open_positions_pnl > 0 ? 'up' : 'down');
         ob.style.display = 'inline-flex';
+      } else {
+        document.getElementById('open-pnl-badge').style.display = 'none';
       }
 
       const posCount = mt5.open_positions ?? 0;
@@ -762,12 +767,14 @@
       const atEl = document.getElementById('all-time-pnl');
       atEl.textContent = fmt(mt5.all_time_pnl);
       atEl.className = 'stat-val ' + colorClass(mt5.all_time_pnl);
-      if (mt5.all_time_pnl != null && mt5.total_investment > 0) {
+      if (mt5.all_time_pnl != null && mt5.all_time_pnl !== 0 && mt5.total_investment > 0) {
         const atRet = mt5.all_time_pnl / mt5.total_investment * 100;
         const ab = document.getElementById('alltime-badge');
-        ab.textContent = (atRet >= 0 ? '↑ ' : '↓ ') + Math.abs(atRet).toFixed(1) + '%';
-        ab.className = 'trend-badge ' + (atRet >= 0 ? 'up' : 'down');
+        ab.textContent = (atRet > 0 ? '↑ ' : '↓ ') + Math.abs(atRet).toFixed(1) + '%';
+        ab.className = 'trend-badge ' + (atRet > 0 ? 'up' : 'down');
         ab.style.display = 'inline-flex';
+      } else {
+        document.getElementById('alltime-badge').style.display = 'none';
       }
 
       renderPositions(positions);
@@ -798,10 +805,10 @@
         const oStr   = hasData ? fmt(t.open_positions_pnl) : '—';
         const typeCls   = t.type === 'futures' ? 'futures' : 'cfd';
         const typeLabel = t.type === 'futures' ? 'FUTURES' : 'CFD';
-        const atRetPct  = hasData && t.investment > 0
+        const atRetPct  = hasData && t.investment > 0 && t.all_time_pnl !== 0
           ? ((t.all_time_pnl / t.investment) * 100) : null;
         const atBadge   = atRetPct != null
-          ? `<span class="trend-badge ${atRetPct >= 0 ? 'up' : 'down'}">${atRetPct >= 0 ? '↑' : '↓'} ${Math.abs(atRetPct).toFixed(1)}%</span>`
+          ? `<span class="trend-badge ${atRetPct > 0 ? 'up' : 'down'}">${atRetPct > 0 ? '↑' : '↓'} ${Math.abs(atRetPct).toFixed(1)}%</span>`
           : '';
         return `<div class="trader-row">
           <div>
