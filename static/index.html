@@ -270,11 +270,13 @@
       position: fixed; bottom: max(24px, env(safe-area-inset-bottom)); right: 20px;
       width: 44px; height: 44px; border-radius: 50%;
       background: var(--surface); border: 1px solid var(--border-hi);
+      opacity: 0.45;
       cursor: pointer; display: flex; align-items: center; justify-content: center;
       z-index: 200; -webkit-tap-highlight-color: transparent;
       transition: border-color 0.2s;
     }
-    #refresh-btn:active { border-color: var(--green); }
+    #refresh-btn:hover  { opacity: 1; }
+    #refresh-btn:active { opacity: 1; border-color: var(--green); }
     #refresh-btn svg { width: 18px; height: 18px; fill: var(--muted); }
     #refresh-btn.spinning svg { animation: spin360 0.6s linear infinite; }
     @keyframes spin360 { to { transform: rotate(360deg); } }
