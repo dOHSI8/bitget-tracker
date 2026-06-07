@@ -176,7 +176,7 @@ const atRetStr = atRetPct != null
 const rTop = widget.addStack();
 rTop.layoutHorizontally();
 rTop.centerAlignContent();
-note(rTop, "DKTrading");
+note(rTop, "Bitget · all portfolios");
 rTop.addSpacer();
 note(rTop, stale ? "· stale  " + updAt : updAt, 9, stale ? AMBER : MUTED);
 
