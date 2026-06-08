@@ -197,9 +197,6 @@ async def _poll_once(push_fn: Callable, cookie_str: str,
                 ttype = trader_types.get(tname, "cfd")
                 if ttype == "cfd":
                     warmup_pages.append(f"/copy-trading/cfd-center/my-portfolio/{pid}")
-            # Visit followers center to seed cookies for cancelled-copies API calls
-            if any(trader_types.get(n, "cfd") == "cfd" for n in traders):
-                warmup_pages.append("/copy-trading/cfd-center/followers")
             for path in warmup_pages:
                 try:
                     await page.goto(f"{BITGET_BASE}{path}",
@@ -690,77 +687,146 @@ async def _fetch_futures_fund_flow(page, push_fn: Callable, trader_name: str, pi
 
 # ── Cancelled copy portfolios ─────────────────────────────────────────────────
 
+_PROFIT_KEYS = {"netProfit", "estNetProfit", "copyDays", "followDays",
+                "stopTime", "cancelTime", "totalProfit", "realizedPnl"}
+
+
+def _extract_rows(data) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("rows") or data.get("list") or data.get("portfolioDetails") or []
+    return []
+
+
 async def _fetch_cancelled_copies(page, push_fn: Callable):
-    """Probe for historical/cancelled CFD copy portfolios.
-    Sums up netProfit across all stopped copies and pushes as 'cancelled_copies'.
-    Endpoint is not officially documented — probes several candidates in order.
+    """Fetch cancelled CFD copy portfolios for all-time PnL.
+
+    Strategy 1 (no extra navigation): call getFollowPortfolios with various
+    status-filter bodies — if Bitget uses the same endpoint with a status param,
+    this works without any page navigation.
+
+    Strategy 2 (navigate + intercept): navigate to /cfd-center/followers and
+    capture the API responses the page itself makes. Click the "Canceled" tab
+    to trigger its data load, then read the captured rows.
     """
-    probes = [
-        ("POST", "/v1/trace/mt5/trace/getHistoryFollowPortfolios",
-         {"pageNo": 1, "pageSize": 100}),
-        ("POST", "/v1/trace/mt5/trace/getFollowPortfolioHistory",
-         {"pageNo": 1, "pageSize": 100}),
-        ("POST", "/v1/trace/mt5/trace/followerHistoryPortfolio",
-         {"pageNo": 1, "pageSize": 100}),
-        ("GET",  "/api/v2/copy/mt5-follower/history-portfolios",
-         {"pageNo": "1", "pageSize": "100"}),
-        ("POST", "/v1/copy/mt5/follower/history",
-         {"pageNo": 1, "pageSize": 100}),
+    # ── Strategy 1: status-filter probes on the known-working endpoint ────────
+    status_bodies = [
+        {"followStatus": 2},
+        {"followStatus": "2"},
+        {"followStatus": "closed"},
+        {"status": 2},
+        {"status": "CLOSED"},
     ]
-    results = []
-    for method, ep, params in probes:
+    s1_results = []
+    for body in status_bodies:
         try:
-            result = await page.evaluate("""async ([method, ep, params]) => {
+            result = await page.evaluate("""async (body) => {
                 try {
-                    let url = ep;
-                    let opts = {method, credentials: 'include', headers: {}};
-                    if (method === 'GET') {
-                        url = ep + '?' + new URLSearchParams(params).toString();
-                    } else {
-                        opts.headers['Content-Type'] = 'application/json';
-                        opts.body = JSON.stringify(params);
-                    }
-                    const r = await fetch(url, opts);
+                    const r = await fetch('/v1/trace/mt5/trace/getFollowPortfolios', {
+                        method: 'POST', credentials: 'include',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
                     const text = await r.text();
                     if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
                     const j = JSON.parse(text);
-                    return {status: r.status, code: j?.code, msg: j?.msg, data: j?.data,
-                            data_keys: j?.data != null ? Object.keys(Object(j.data)).slice(0, 10) : null,
-                            row0: (() => {
-                                const d = j?.data;
-                                const rows = Array.isArray(d) ? d :
-                                    (d?.rows || d?.list || d?.portfolioDetails || []);
-                                const r0 = rows[0];
-                                return r0 ? Object.keys(r0).slice(0, 15) : null;
-                            })()};
+                    const rows = j?.data?.portfolioDetails || j?.data?.rows || j?.data?.list || [];
+                    return {status: r.status, code: j?.code, rows: rows.length,
+                            row0_keys: rows[0] ? Object.keys(rows[0]).slice(0,15) : null,
+                            data: j?.data};
                 } catch(e) { return {status: 0, error: String(e)}; }
-            }""", [method, ep, params])
+            }""", body)
             code = result.get("code") if isinstance(result, dict) else None
-            ep_short = ep.split("/")[-1]
-            logger.info("Cancelled copies %s: HTTP %s code=%s keys=%s row0_keys=%s err=%s",
-                        ep_short, result.get("status"), code,
-                        result.get("data_keys"), result.get("row0"), result.get("error"))
-            results.append({
-                "ep": ep_short, "http": result.get("status"), "code": code,
-                "error": result.get("error"), "data_keys": result.get("data_keys"),
-                "row0_keys": result.get("row0"),
-            })
-            if result.get("error") == "html_redirect":
-                continue
+            s1_results.append({"body": str(body), "http": result.get("status"),
+                                "code": code, "rows": result.get("rows"),
+                                "row0_keys": result.get("row0_keys"), "error": result.get("error")})
+            logger.info("Cancelled S1 body=%s: HTTP %s code=%s rows=%s err=%s",
+                        body, result.get("status"), code, result.get("rows"), result.get("error"))
             if result.get("status") == 200 and code in ("00000", "200", "0"):
-                data = result.get("data")
-                if data:
-                    rows = (data if isinstance(data, list) else
-                            data.get("rows") or data.get("list") or
-                            data.get("portfolioDetails") or [])
-                    if rows:
-                        logger.info("Cancelled copies found via %s: %d entries", ep_short, len(rows))
-                        push_fn("cancelled_copies", rows)
-                        _status["cancelled_copies_probe"] = results
-                        return
+                rows = _extract_rows(result.get("data"))
+                if rows and _PROFIT_KEYS & set(rows[0].keys()):
+                    logger.info("Cancelled copies via status filter: %d entries body=%s", len(rows), body)
+                    push_fn("cancelled_copies", rows)
+                    _status["cancelled_copies_probe"] = {"strategy": "S1", "results": s1_results}
+                    return
         except Exception as e:
-            ep_short = ep.split("/")[-1]
-            logger.warning("Cancelled copies %s error: %s", ep_short, e)
-            results.append({"ep": ep_short, "error": str(e)})
-    _status["cancelled_copies_probe"] = results
-    logger.info("Cancelled copies: no probe succeeded — tried %d endpoints", len(probes))
+            s1_results.append({"body": str(body), "error": str(e)})
+
+    # ── Strategy 2: navigate + response interception ──────────────────────────
+    captured: list[dict] = []
+
+    async def on_response(response):
+        url = response.url
+        if response.status != 200:
+            return
+        if not any(p in url for p in ("/trace/mt5/trace/", "/api/v2/copy/mt5", "/copy/mt5/")):
+            return
+        try:
+            text = await response.text()
+            if not text.strip().startswith("{"):
+                return
+            j = json.loads(text)
+            if j.get("code") not in ("00000", "200", "0"):
+                return
+            rows = _extract_rows(j.get("data"))
+            if rows and isinstance(rows[0], dict):
+                ep = url.split("?")[0].split("/")[-1]
+                logger.info("Nav-captured %s: %d rows keys=%s", ep, len(rows),
+                            list(rows[0].keys())[:12])
+                captured.append({"ep": ep, "rows": rows})
+        except Exception:
+            pass
+
+    page.on("response", on_response)
+    try:
+        await page.goto(f"{BITGET_BASE}/copy-trading/cfd-center/followers",
+                        wait_until="domcontentloaded", timeout=30_000)
+        await asyncio.sleep(2)
+
+        # Click the "Canceled" tab to trigger its data load
+        clicked = False
+        for sel in [
+            "text=Cancel",
+            "[class*='tab']:has-text('Cancel')",
+            "li:has-text('Cancel')",
+            "div[role='tab']:has-text('Cancel')",
+            ".tab-item:has-text('Cancel')",
+        ]:
+            try:
+                el = await page.query_selector(sel)
+                if el:
+                    await el.click()
+                    logger.info("Clicked cancelled tab via selector: %s", sel)
+                    clicked = True
+                    await asyncio.sleep(3)
+                    break
+            except Exception:
+                pass
+        if not clicked:
+            logger.info("Cancelled tab not found — captured page-load responses only")
+            await asyncio.sleep(2)
+    except Exception as e:
+        logger.warning("Cancelled copies nav: %s", e)
+    finally:
+        page.remove_listener("response", on_response)
+
+    s2_probe = [{"ep": c["ep"], "rows": len(c["rows"]),
+                 "row0_keys": list(c["rows"][0].keys())[:15]} for c in captured]
+    _status["cancelled_copies_probe"] = {"strategy": "S2", "s1": s1_results, "s2": s2_probe}
+
+    if not captured:
+        logger.info("Cancelled copies: S2 captured nothing")
+        return
+
+    # Prefer rows that look like copy portfolio data (have profit/days fields)
+    best = None
+    for c in reversed(captured):
+        if _PROFIT_KEYS & set(c["rows"][0].keys()):
+            best = c
+            break
+    if best is None:
+        best = captured[-1]
+
+    logger.info("Cancelled copies S2: %d entries from %s", len(best["rows"]), best["ep"])
+    push_fn("cancelled_copies", best["rows"])
