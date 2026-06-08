@@ -687,8 +687,11 @@ async def _fetch_futures_fund_flow(page, push_fn: Callable, trader_name: str, pi
 
 # ── Cancelled copy portfolios ─────────────────────────────────────────────────
 
-_PROFIT_KEYS = {"netProfit", "estNetProfit", "copyDays", "followDays",
-                "stopTime", "cancelTime", "totalProfit", "realizedPnl"}
+# Fields unique to cancelled copy summary rows (not present in active portfolios)
+_CANCEL_KEYS = {"netProfit", "estNetProfit", "stopTime", "cancelTime",
+                "traderNickName", "profitSharingAmount", "copyProfit", "cancelReason"}
+# Fields that indicate active/live portfolio data — if present, row is NOT a cancelled copy
+_ACTIVE_KEYS = {"marginCall", "marginFree", "credit", "connecting"}
 
 
 def _extract_rows(data) -> list:
@@ -711,12 +714,16 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
     to trigger its data load, then read the captured rows.
     """
     # ── Strategy 1: status-filter probes on the known-working endpoint ────────
+    # followStatus 2 = actively copying (NOT cancelled). Try 3, 4, 5 for stopped/closed.
     status_bodies = [
-        {"followStatus": 2},
-        {"followStatus": "2"},
+        {"followStatus": 3},
+        {"followStatus": 4},
+        {"followStatus": 5},
+        {"followStatus": "3"},
         {"followStatus": "closed"},
-        {"status": 2},
+        {"status": 3},
         {"status": "CLOSED"},
+        {"status": "STOP"},
     ]
     s1_results = []
     for body in status_bodies:
@@ -733,7 +740,7 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
                     const j = JSON.parse(text);
                     const rows = j?.data?.portfolioDetails || j?.data?.rows || j?.data?.list || [];
                     return {status: r.status, code: j?.code, rows: rows.length,
-                            row0_keys: rows[0] ? Object.keys(rows[0]).slice(0,15) : null,
+                            row0_keys: rows[0] ? Object.keys(rows[0]).slice(0, 15) : null,
                             data: j?.data};
                 } catch(e) { return {status: 0, error: String(e)}; }
             }""", body)
@@ -745,7 +752,15 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
                         body, result.get("status"), code, result.get("rows"), result.get("error"))
             if result.get("status") == 200 and code in ("00000", "200", "0"):
                 rows = _extract_rows(result.get("data"))
-                if rows and _PROFIT_KEYS & set(rows[0].keys()):
+                if not rows:
+                    continue
+                r0 = rows[0]
+                # Skip if this looks like active portfolio data (has live margin fields)
+                if any(k in r0 for k in _ACTIVE_KEYS):
+                    logger.info("Cancelled S1 body=%s: active portfolio data, skipping", body)
+                    continue
+                # Accept if rows have cancelled-copy-specific fields
+                if _CANCEL_KEYS & set(r0.keys()):
                     logger.info("Cancelled copies via status filter: %d entries body=%s", len(rows), body)
                     push_fn("cancelled_copies", rows)
                     _status["cancelled_copies_probe"] = {"strategy": "S1", "results": s1_results}
@@ -771,10 +786,12 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
                 return
             rows = _extract_rows(j.get("data"))
             if rows and isinstance(rows[0], dict):
+                r0 = rows[0]
                 ep = url.split("?")[0].split("/")[-1]
-                logger.info("Nav-captured %s: %d rows keys=%s", ep, len(rows),
-                            list(rows[0].keys())[:12])
-                captured.append({"ep": ep, "rows": rows})
+                is_active = bool(_ACTIVE_KEYS & set(r0.keys()))
+                logger.info("Nav-captured %s: %d rows active=%s keys=%s",
+                            ep, len(rows), is_active, list(r0.keys())[:12])
+                captured.append({"ep": ep, "rows": rows, "is_active": is_active})
         except Exception:
             pass
 
@@ -811,7 +828,7 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
     finally:
         page.remove_listener("response", on_response)
 
-    s2_probe = [{"ep": c["ep"], "rows": len(c["rows"]),
+    s2_probe = [{"ep": c["ep"], "rows": len(c["rows"]), "is_active": c.get("is_active"),
                  "row0_keys": list(c["rows"][0].keys())[:15]} for c in captured]
     _status["cancelled_copies_probe"] = {"strategy": "S2", "s1": s1_results, "s2": s2_probe}
 
@@ -819,13 +836,23 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
         logger.info("Cancelled copies: S2 captured nothing")
         return
 
-    # Prefer rows that look like copy portfolio data (have profit/days fields)
+    # Prefer rows that have cancelled-copy-specific fields and no active-portfolio fields
     best = None
     for c in reversed(captured):
-        if _PROFIT_KEYS & set(c["rows"][0].keys()):
+        r0 = c["rows"][0] if c["rows"] else {}
+        if _ACTIVE_KEYS & set(r0.keys()):
+            continue  # Skip active portfolio data
+        if _CANCEL_KEYS & set(r0.keys()):
             best = c
             break
+    # Fallback: last captured that isn't active portfolio data
     if best is None:
+        for c in reversed(captured):
+            r0 = c["rows"][0] if c["rows"] else {}
+            if not (_ACTIVE_KEYS & set(r0.keys())):
+                best = c
+                break
+    if best is None and captured:
         best = captured[-1]
 
     logger.info("Cancelled copies S2: %d entries from %s", len(best["rows"]), best["ep"])

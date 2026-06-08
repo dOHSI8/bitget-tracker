@@ -472,43 +472,52 @@ def _push_data(kind: str, data, trader: str = None):
         # Account-level: net profit from all copy portfolios the user has stopped.
         # Stored globally (not per-trader) since these copies no longer exist as traders.
         rows = data if isinstance(data, list) else []
-        if rows:
-            total = 0.0
-            for r in rows:
-                if not isinstance(r, dict):
-                    continue
-                # Try direct netProfit field first; fall back to realizedPnl - profitShareAmount
-                for key in ("netProfit", "net_profit", "estNetProfit",
-                            "totalProfit", "profit", "closedPnl"):
-                    if key in r:
+        if not rows:
+            return
+        r0 = rows[0] if isinstance(rows[0], dict) else {}
+        # Reject if rows look like active portfolio data (live trading fields present).
+        # Active portfolios have marginCall/credit/connecting; cancelled summaries don't.
+        if any(k in r0 for k in ("marginCall", "credit", "connecting")):
+            logger.warning("Cancelled copies: rejected active portfolio data (%d rows) — clearing stale value",
+                           len(rows))
+            _settings.pop("cancelled_copy_pnl", None)
+            _settings.pop("cancelled_copy_count", None)
+            _save_settings(_settings)
+            return
+        total = 0.0
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            # Try direct netProfit field first; fall back to realizedPnl - profitShareAmount
+            for key in ("netProfit", "net_profit", "estNetProfit", "totalProfit", "profit", "closedPnl"):
+                if key in r:
+                    try:
+                        total += float(r[key])
+                        break
+                    except (TypeError, ValueError):
+                        pass
+            else:
+                rpnl = 0.0
+                pshare = 0.0
+                for k in ("realizedPnl", "realizedProfit", "realPnl"):
+                    if k in r:
                         try:
-                            total += float(r[key])
+                            rpnl = float(r[k])
                             break
                         except (TypeError, ValueError):
                             pass
-                else:
-                    # Compute from realized - profit share if no direct field
-                    rpnl = 0.0
-                    pshare = 0.0
-                    for k in ("realizedPnl", "realizedProfit", "realPnl"):
-                        if k in r:
-                            try:
-                                rpnl = float(r[k])
-                                break
-                            except (TypeError, ValueError):
-                                pass
-                    for k in ("profitSharingAmount", "profitShareAmount", "shareProfit"):
-                        if k in r:
-                            try:
-                                pshare = float(r[k])
-                                break
-                            except (TypeError, ValueError):
-                                pass
-                    total += rpnl - pshare
-            _settings["cancelled_copy_pnl"] = round(total, 2)
-            _settings["cancelled_copy_count"] = len(rows)
-            _save_settings(_settings)
-            logger.info("Cancelled copies: %d entries, total net_profit=%.2f", len(rows), total)
+                for k in ("profitSharingAmount", "profitShareAmount", "shareProfit", "sharedProfit"):
+                    if k in r:
+                        try:
+                            pshare = float(r[k])
+                            break
+                        except (TypeError, ValueError):
+                            pass
+                total += rpnl - pshare
+        _settings["cancelled_copy_pnl"] = round(total, 2)
+        _settings["cancelled_copy_count"] = len(rows)
+        _save_settings(_settings)
+        logger.info("Cancelled copies: %d entries, total net_profit=%.2f", len(rows), total)
     elif kind == "fund_flow":
         # Futures copy trading transfer history — compute net investment.
         # Only applies to futures traders; ignore if type has already changed to cfd
