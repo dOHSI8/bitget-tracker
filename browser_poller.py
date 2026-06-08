@@ -285,33 +285,43 @@ async def _active_poll(page, push_fn: Callable,
 
 
 async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str):
-    """Fetch up to 30 days of closed position history, paginating as needed."""
-    cutoff_ms = (datetime.now(BKK) - timedelta(days=30)).timestamp() * 1000
+    """
+    Fetch up to 30 days of closed position history.
+
+    positionHistory doesn't support pageNo > 1 — page 2 returns empty.
+    Instead we use time-based cursor pagination: each batch uses
+    endTime = oldest_close_ms from the previous batch.
+    """
+    cutoff_ms = int((datetime.now(BKK) - timedelta(days=30)).timestamp() * 1000)
     all_rows: list = []
-    page_no = 1
+    end_time_ms: int | None = None   # None = no filter (get latest batch first)
     PAGE_SIZE = 50
-    MAX_PAGES = 20  # safety cap (~1000 trades)
+    MAX_BATCHES = 25  # safety cap (~1250 trades / 30 days)
 
     try:
-        while page_no <= MAX_PAGES:
-            hist = await page.evaluate("""async ([pid, pageNo, pageSize]) => {
+        for batch in range(MAX_BATCHES):
+            body: dict = {"portfolioId": pid, "pageSize": PAGE_SIZE}
+            if end_time_ms is not None:
+                body["endTime"] = end_time_ms
+
+            hist = await page.evaluate("""async ([pid, body]) => {
                 try {
                     const r = await fetch('/v1/trace/mt5/trace/positionHistory', {
                         method: 'POST', credentials: 'include',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({portfolioId: pid, pageNo, pageSize}),
+                        body: JSON.stringify(body),
                     });
                     const text = await r.text();
                     if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
                     const j = JSON.parse(text);
                     return {status: r.status, data: j};
                 } catch(e) { return {status: 0, error: String(e)}; }
-            }""", [pid, page_no, PAGE_SIZE])
+            }""", [pid, body])
 
             api_code = (hist.get("data") or {}).get("code")
             api_msg  = (hist.get("data") or {}).get("msg")
 
-            if page_no == 1:
+            if batch == 0:
                 logger.info("CFD history[%s]: HTTP %s code=%s err=%s",
                             trader_name, hist.get("status"), api_code, hist.get("error"))
                 _status["last_hist_response"] = {
@@ -335,21 +345,27 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
 
             all_rows.extend(rows)
 
-            # Stop if we've reached trades older than 30 days
             oldest = _oldest_close_ms(rows)
+
+            # Stop if we've reached trades older than 30 days
             if oldest and oldest < cutoff_ms:
                 break
 
-            # Stop if this page was partial (last page)
+            # Stop if this batch was partial (no more data on server)
             if len(rows) < PAGE_SIZE:
                 break
 
-            page_no += 1
+            # Advance cursor: next batch ends just before oldest trade in this one
+            if not oldest:
+                break
+            end_time_ms = oldest - 1
 
         if all_rows:
-            logger.info("CFD history[%s]: %d trades across %d pages",
-                        trader_name, len(all_rows), page_no)
-            # Wrap in same structure the parser expects
+            logger.info("CFD history[%s]: %d trades across %d batches, oldest=%s",
+                        trader_name, len(all_rows), batch + 1,
+                        datetime.fromtimestamp(
+                            (_oldest_close_ms(all_rows) or 0) / 1000, tz=BKK
+                        ).strftime("%Y-%m-%d") if all_rows else "?")
             push_fn("history", {"code": "200", "data": {"rows": all_rows}}, trader_name)
 
     except Exception as e:
