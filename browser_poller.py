@@ -288,19 +288,20 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
     """
     Fetch up to 30 days of closed position history.
 
-    positionHistory doesn't support pageNo > 1 — page 2 returns empty.
-    Instead we use time-based cursor pagination: each batch uses
-    endTime = oldest_close_ms from the previous batch.
+    positionHistory ignores pageNo > 1 but respects endTime for cursor pagination.
+    The API caps each response at 50 rows regardless of pageSize.
+    We walk backwards using endTime = oldest close time of previous batch.
     """
     cutoff_ms = int((datetime.now(BKK) - timedelta(days=30)).timestamp() * 1000)
     all_rows: list = []
     end_time_ms: int | None = None   # None = no filter (get latest batch first)
-    PAGE_SIZE = 200
-    MAX_BATCHES = 25  # safety cap (~5000 trades / 30 days)
+    API_PAGE_CAP = 50   # API hard cap; pageSize param is ignored above this
+    MAX_BATCHES = 25    # safety cap (~1250 trades / 30 days)
+    prev_oldest: int | None = None  # detect if endTime is being ignored
 
     try:
         for batch in range(MAX_BATCHES):
-            body: dict = {"portfolioId": pid, "pageSize": PAGE_SIZE}
+            body: dict = {"portfolioId": pid, "pageSize": API_PAGE_CAP}
             if end_time_ms is not None:
                 body["endTime"] = end_time_ms
 
@@ -347,12 +348,19 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
 
             oldest = _oldest_close_ms(rows)
 
+            # Stop if API is ignoring endTime (same oldest timestamp returned again)
+            if oldest is not None and oldest == prev_oldest:
+                logger.info("CFD history[%s]: endTime ignored by API, stopping at batch %d",
+                            trader_name, batch + 1)
+                break
+            prev_oldest = oldest
+
             # Stop if we've reached trades older than 30 days
             if oldest and oldest < cutoff_ms:
                 break
 
-            # Stop if this batch was partial (no more data on server)
-            if len(rows) < PAGE_SIZE:
+            # Stop if this batch was partial — no more data on server
+            if len(rows) < API_PAGE_CAP:
                 break
 
             # Advance cursor: next batch ends just before oldest trade in this one
