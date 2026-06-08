@@ -1205,7 +1205,7 @@
   fetchData();
   fetchTraders();
   fetchInvestment();
-  setInterval(() => { fetchData(); fetchInvestment(); }, 120_000);
+  setInterval(() => { fetchData(); fetchInvestment(); }, 60_000);
   setInterval(fetchTraders, 30_000);
   document.getElementById('refresh-btn').addEventListener('click', () => { fetchData(); fetchTraders(); fetchInvestment(); });
 
