@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 BKK = timezone(timedelta(hours=7))
 BITGET_BASE = "https://www.bitget.com"
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SEC", "120"))
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SEC", "60"))
 COOKIES_FILE = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
 TRADERS_FILE = Path(os.environ.get("TRADERS_PATH", "traders.json"))
 
