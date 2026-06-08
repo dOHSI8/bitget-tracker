@@ -769,13 +769,18 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
             s1_results.append({"body": str(body), "error": str(e)})
 
     # ── Strategy 2: navigate + response interception ──────────────────────────
+    # Broad capture: any Bitget API response (not just known MT5 paths)
     captured: list[dict] = []
 
     async def on_response(response):
         url = response.url
         if response.status != 200:
             return
-        if not any(p in url for p in ("/trace/mt5/trace/", "/api/v2/copy/mt5", "/copy/mt5/")):
+        # Catch any /v1/ or /api/v2/ JSON endpoint — cancelled copies may be on a path
+        # we haven't guessed yet
+        if not any(p in url for p in ("/v1/", "/api/v2/")):
+            return
+        if any(url.endswith(ext) for ext in (".js", ".css", ".png", ".jpg", ".svg", ".woff")):
             return
         try:
             text = await response.text()
@@ -784,14 +789,15 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
             j = json.loads(text)
             if j.get("code") not in ("00000", "200", "0"):
                 return
-            rows = _extract_rows(j.get("data"))
-            if rows and isinstance(rows[0], dict):
-                r0 = rows[0]
-                ep = url.split("?")[0].split("/")[-1]
-                is_active = bool(_ACTIVE_KEYS & set(r0.keys()))
-                logger.info("Nav-captured %s: %d rows active=%s keys=%s",
-                            ep, len(rows), is_active, list(r0.keys())[:12])
-                captured.append({"ep": ep, "rows": rows, "is_active": is_active})
+            inner = j.get("data")
+            rows = _extract_rows(inner) if inner else []
+            ep = url.split("?")[0].split("/")[-1]
+            r0_keys = list(rows[0].keys())[:15] if (rows and isinstance(rows[0], dict)) else []
+            is_active = bool(_ACTIVE_KEYS & set(r0_keys)) if r0_keys else None
+            logger.info("Nav-captured %s: rows=%d is_active=%s keys=%s",
+                        ep, len(rows), is_active, r0_keys[:8])
+            captured.append({"ep": ep, "url": url, "rows": rows,
+                              "is_active": is_active, "r0_keys": r0_keys})
         except Exception:
             pass
 
@@ -799,29 +805,30 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
     try:
         await page.goto(f"{BITGET_BASE}/copy-trading/cfd-center/followers",
                         wait_until="domcontentloaded", timeout=30_000)
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
-        # Click the "Canceled" tab to trigger its data load
-        clicked = False
-        for sel in [
-            "text=Cancel",
-            "[class*='tab']:has-text('Cancel')",
-            "li:has-text('Cancel')",
-            "div[role='tab']:has-text('Cancel')",
-            ".tab-item:has-text('Cancel')",
-        ]:
-            try:
-                el = await page.query_selector(sel)
-                if el:
-                    await el.click()
-                    logger.info("Clicked cancelled tab via selector: %s", sel)
-                    clicked = True
-                    await asyncio.sleep(3)
-                    break
-            except Exception:
-                pass
-        if not clicked:
-            logger.info("Cancelled tab not found — captured page-load responses only")
+        # Click the "Canceled copy trades" tab using a JS DOM search
+        # (avoids fragile CSS selectors that depend on Bitget's class names)
+        clicked_text = await page.evaluate("""() => {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+            let node;
+            while ((node = walker.nextNode())) {
+                const text = node.textContent?.trim() || '';
+                const isLeafLike = node.children.length <= 3;
+                const isVisible = node.offsetParent !== null;
+                if (isLeafLike && isVisible &&
+                    (text.includes('Canceled') || text.includes('Cancelled') ||
+                     text.includes('Cancel'))) {
+                    node.click();
+                    return text.slice(0, 60);
+                }
+            }
+            return null;
+        }""")
+        logger.info("Cancelled tab click result: %s", clicked_text)
+        if clicked_text:
+            await asyncio.sleep(4)
+        else:
             await asyncio.sleep(2)
     except Exception as e:
         logger.warning("Cancelled copies nav: %s", e)
@@ -829,7 +836,9 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
         page.remove_listener("response", on_response)
 
     s2_probe = [{"ep": c["ep"], "rows": len(c["rows"]), "is_active": c.get("is_active"),
-                 "row0_keys": list(c["rows"][0].keys())[:15]} for c in captured]
+                 "row0_keys": c.get("r0_keys", [])[:15],
+                 "url_path": "/" + "/".join(c["url"].split("?")[0].split("/")[3:])}
+                for c in captured]
     _status["cancelled_copies_probe"] = {"strategy": "S2", "s1": s1_results, "s2": s2_probe}
 
     if not captured:
