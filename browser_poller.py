@@ -250,6 +250,7 @@ async def _active_poll(page, push_fn: Callable,
                             const d = j?.data;
                             const rows = Array.isArray(d) ? d : (d?.list || d?.rows || d?.positions || []);
                             return {status: r.status, code: j?.code, msg: j?.msg,
+                                    data: j?.data,
                                     data_type: Array.isArray(d) ? 'array' : typeof d,
                                     data_keys: d != null ? Object.keys(Object(d)).slice(0,8) : null,
                                     row_count: rows.length};
