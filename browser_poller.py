@@ -447,6 +447,8 @@ async def _fetch_balance(page, push_fn: Callable,
     for trader_name, pid in fut_traders.items():
         await _fetch_futures_balance(page, push_fn, trader_name, pid)
 
+    await _fetch_elite_trader(page, push_fn)
+
 
 async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
     pid_set = set(cfd_traders.values())
@@ -761,4 +763,105 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
 
     push_fn("cancelled_copies", rows)
     logger.info("Cancelled copies: %d rows from getFollowHistory", len(rows))
+
+
+# ── Elite (lead) trader portfolio ─────────────────────────────────────────────
+
+_ELITE_PROBES = [
+    # Most likely names for the lead-trader's own portfolio endpoint
+    "/v1/trace/mt5/trace/getTraderPortfolios",
+    "/v1/trace/mt5/trace/getTraderPortfolio",
+    "/v1/trace/mt5/trace/getMyTraderPortfolio",
+    "/v1/trace/mt5/trace/getMyTraderPortfolios",
+    "/v1/trace/mt5/trace/myTraderPortfolio",
+    "/v1/trace/mt5/trace/traderPortfolio",
+    "/v1/trace/mt5/trace/traderPortfolioDetail",
+    "/v1/trace/mt5/trace/getTraderDetail",
+    "/v1/trace/mt5/trace/getTraderInfo",
+    "/v1/trace/mt5/trace/getLeaderPortfolio",
+    "/v1/trace/mt5/trace/getLeaderPortfolios",
+    "/v1/trace/mt5/trace/getElitePortfolio",
+    "/v1/trace/mt5/trace/getElitePortfolios",
+    "/v1/trace/mt5/trace/elitePortfolio",
+    "/v1/trace/mt5/trace/getMyPortfolio",
+    "/v1/trace/mt5/trace/getMyPortfolios",
+    # follow/ sub-path variants
+    "/v1/trace/mt5/follow/getTraderPortfolio",
+    "/v1/trace/mt5/follow/getLeaderPortfolio",
+    "/v1/trace/mt5/follow/getElitePortfolio",
+    # trader/ sub-path
+    "/v1/trace/mt5/trader/portfolio",
+    "/v1/trace/mt5/trader/getPortfolio",
+    "/v1/trace/mt5/trader/myPortfolio",
+    "/v1/trace/mt5/trader/detail",
+    # top-level copy paths
+    "/v1/copy/mt5/getTraderPortfolio",
+    "/v1/copy/mt5/getLeaderPortfolio",
+    "/v1/copy/mt5/getElitePortfolio",
+    "/v1/copy/mt5/myPortfolio",
+]
+_ELITE_KEYS = {"followerCount", "followCount", "currentFollowers",
+               "totalProfit", "cumulativeProfit", "traderBalance",
+               "eliteBalance", "leaderBalance"}
+_elite_ep: str | None = None  # cached once found
+
+
+async def _fetch_elite_trader(page, push_fn: Callable):
+    """Find and fetch the user's own elite (lead) trader portfolio balance."""
+    global _elite_ep
+
+    endpoints = [_elite_ep] if _elite_ep else _ELITE_PROBES
+
+    for ep in endpoints:
+        try:
+            result = await page.evaluate("""async (ep) => {
+                try {
+                    const r = await fetch(ep, {
+                        method: 'POST', credentials: 'include',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({}),
+                    });
+                    const text = await r.text();
+                    if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
+                    const j = JSON.parse(text);
+                    const d = j?.data;
+                    // data may be a single object or an array; grab first item if array
+                    const row = Array.isArray(d) ? d[0] : (d?.portfolioDetails?.[0] ?? d?.list?.[0] ?? d?.rows?.[0] ?? d);
+                    return {status: r.status, code: j?.code,
+                            keys: row && typeof row === 'object' ? Object.keys(row).slice(0, 20) : null,
+                            row: row};
+                } catch(e) { return {status: 0, error: String(e)}; }
+            }""", ep)
+        except Exception as e:
+            logger.warning("Elite probe %s error: %s", ep, e)
+            continue
+
+        http = result.get("status") if isinstance(result, dict) else 0
+        code = result.get("code")   if isinstance(result, dict) else None
+        err  = result.get("error")  if isinstance(result, dict) else None
+
+        if err == "html_redirect":
+            _status["auth_ok"] = False
+            break
+        if http == 404:
+            continue
+        if http == 200 and code in ("00000", "200", "0"):
+            row = result.get("row")
+            if not isinstance(row, dict):
+                continue
+            row_keys = set(row.keys())
+            # Must have at least one elite-trader-specific key and a balance field
+            if (_ELITE_KEYS & row_keys) or (
+                    {"balance", "totalBalance"} & row_keys and
+                    {"profit", "totalProfit", "dailyProfit"} & row_keys):
+                _elite_ep = ep
+                _status["elite_probe"] = {"ep": ep, "http": http, "code": code,
+                                          "keys": list(row_keys)[:20]}
+                push_fn("elite_trader", row)
+                logger.info("Elite trader found: ep=%s balance=%s", ep, row.get("balance"))
+                return
+            elif row_keys:
+                logger.debug("Elite probe hit wrong shape: ep=%s keys=%s", ep, list(row_keys)[:15])
+
+    _status.setdefault("elite_probe", {"found": False})
 

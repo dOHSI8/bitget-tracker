@@ -590,6 +590,33 @@
       <div id="traders-cards"></div>
     </div>
 
+    <!-- Elite trader card -->
+    <div id="elite-section" style="display:none">
+      <div class="trader-row">
+        <div>
+          <div class="trader-name-row">
+            <span class="trader-name">Elite Portfolio</span>
+            <span class="type-badge futures">LEADER</span>
+          </div>
+          <div class="trader-metrics">
+            <div>
+              <div class="trader-metric-label">Balance</div>
+              <div class="trader-metric-val green" id="elite-balance">—</div>
+            </div>
+            <div id="elite-daily-wrap" style="display:none">
+              <div class="trader-metric-label">Today</div>
+              <div class="trader-metric-val" id="elite-daily">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="trader-right">
+          <div class="trader-alltime-label" id="elite-alltime-label" style="display:none">ALL TIME</div>
+          <div class="trader-alltime" id="elite-alltime" style="display:none">—</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px" id="elite-followers" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Earn card — same style as trader rows, no divider -->
     <div id="earn-section" style="display:none">
       <div class="trader-row">
@@ -1056,6 +1083,47 @@
   }
 
   let _earnTotal = 0;
+  let _eliteTotal = 0;
+
+  async function fetchElite() {
+    try {
+      const elite = await fetch('/api/elite').then(r => r.json());
+      const sec = document.getElementById('elite-section');
+      if (!elite.available || !elite.balance) { sec.style.display = 'none'; _eliteTotal = 0; return; }
+      sec.style.display = 'block';
+      _eliteTotal = elite.balance || 0;
+      document.getElementById('elite-balance').textContent =
+        '$' + elite.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      // Daily PnL
+      const dailyWrap = document.getElementById('elite-daily-wrap');
+      const dailyEl   = document.getElementById('elite-daily');
+      if (elite.daily_pnl != null && Math.abs(elite.daily_pnl) >= 0.001) {
+        dailyEl.textContent = fmt(elite.daily_pnl);
+        dailyEl.className = 'trader-metric-val ' + colorClass(elite.daily_pnl);
+        dailyWrap.style.display = '';
+      } else {
+        dailyWrap.style.display = 'none';
+      }
+      // All-time PnL
+      const atLabel = document.getElementById('elite-alltime-label');
+      const atEl    = document.getElementById('elite-alltime');
+      if (elite.all_time_pnl != null && Math.abs(elite.all_time_pnl) >= 0.001) {
+        atEl.textContent = fmt(elite.all_time_pnl);
+        atEl.className = 'trader-alltime ' + colorClass(elite.all_time_pnl);
+        atLabel.style.display = ''; atEl.style.display = '';
+      } else {
+        atLabel.style.display = 'none'; atEl.style.display = 'none';
+      }
+      // Followers
+      const followEl = document.getElementById('elite-followers');
+      if (elite.follower_count > 0) {
+        followEl.textContent = elite.follower_count + ' follower' + (elite.follower_count === 1 ? '' : 's');
+        followEl.style.display = '';
+      } else {
+        followEl.style.display = 'none';
+      }
+    } catch(e) { console.error('fetchElite', e); }
+  }
 
   async function fetchEarn() {
     try {
@@ -1101,8 +1169,8 @@
       lastFetchTime = Date.now();
       startAgeTicker();
 
-      // Balance — add earn total (updated by fetchEarn, defaults to 0)
-      const displayBalance = (mt5.total_balance || 0) + _earnTotal;
+      // Balance — add earn + elite totals (updated by their fetchers, default to 0)
+      const displayBalance = (mt5.total_balance || 0) + _earnTotal + _eliteTotal;
       document.getElementById('total-balance').textContent = fmtBal(displayBalance);
       document.getElementById('total-investment').textContent = fmtBal(mt5.total_investment);
 
@@ -1319,9 +1387,10 @@
   fetchTraders();
   fetchInvestment();
   fetchEarn();
-  setInterval(() => { fetchData(); fetchInvestment(); fetchEarn(); }, 30_000);
+  fetchElite();
+  setInterval(() => { fetchData(); fetchInvestment(); fetchEarn(); fetchElite(); }, 30_000);
   setInterval(fetchTraders, 30_000);
-  document.getElementById('refresh-btn').addEventListener('click', () => { fetchData(); fetchTraders(); fetchInvestment(); fetchEarn(); });
+  document.getElementById('refresh-btn').addEventListener('click', () => { fetchData(); fetchTraders(); fetchInvestment(); fetchEarn(); fetchElite(); });
 
   // Tabs
   document.querySelectorAll('.tab-btn').forEach(btn => {

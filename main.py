@@ -192,6 +192,12 @@ _earn: dict = {
     "error": None,
 }
 
+_elite: dict = {
+    "data": None,        # dict with balance, all_time_pnl, daily_pnl, follower_count
+    "fetched_at": None,
+    "error": None,
+}
+
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
 
@@ -555,6 +561,35 @@ def _push_data(kind: str, data, trader: str = None):
         _settings["cancelled_copy_count"] = len(rows)
         _save_settings(_settings)
         logger.info("Cancelled copies: %d entries, total net_profit=%.2f", len(rows), total)
+    elif kind == "elite_trader":
+        # Elite (lead) trader portfolio — data is a single portfolio dict
+        row = data if isinstance(data, dict) else {}
+        if not row:
+            return
+        def _f(r, *keys):
+            for k in keys:
+                v = r.get(k)
+                if v not in (None, "", "0", 0):
+                    try: return float(v)
+                    except (TypeError, ValueError): pass
+            return 0.0
+        balance     = _f(row, "balance", "totalBalance", "totalAsset")
+        all_time    = _f(row, "totalProfit", "allTimeProfit", "profit",
+                         "realizedPnl", "realPnl", "cumulativeProfit")
+        daily       = _f(row, "dailyProfit", "todayProfit", "dailyPnl",
+                         "dayProfit", "profit24h")
+        followers   = int(row.get("followerCount") or row.get("followCount") or
+                          row.get("currentFollowers") or 0)
+        _elite["data"] = {
+            "balance": round(balance, 2),
+            "all_time_pnl": round(all_time, 4),
+            "daily_pnl": round(daily, 4),
+            "follower_count": followers,
+        }
+        _elite["fetched_at"] = datetime.now(BKK).isoformat()
+        _elite["error"] = None
+        logger.info("Elite trader: balance=%.2f all_time=%.2f followers=%d",
+                    balance, all_time, followers)
     elif kind == "fund_flow":
         # Futures copy trading transfer history — compute net investment.
         # Only applies to futures traders; ignore if type has already changed to cfd
@@ -1070,6 +1105,20 @@ async def refresh_earn():
         return {"ok": False, "error": "No API credentials configured"}
     asyncio.create_task(_refresh_earn())
     return {"ok": True, "message": "Refresh started"}
+
+
+@app.get("/api/elite")
+async def get_elite():
+    data = _elite["data"] or {}
+    return {
+        "balance": data.get("balance", 0.0),
+        "all_time_pnl": data.get("all_time_pnl"),
+        "daily_pnl": data.get("daily_pnl"),
+        "follower_count": data.get("follower_count", 0),
+        "fetched_at": _elite["fetched_at"],
+        "error": _elite["error"],
+        "available": _elite["data"] is not None,
+    }
 
 
 @app.post("/api/credentials")
