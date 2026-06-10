@@ -464,6 +464,10 @@
     <div class="banner-sub">Tap to paste a fresh cookie</div>
   </div>
 
+  <div id="conn-banner" style="display:none;background:rgba(212,136,10,0.12);color:var(--amber);font-size:12px;padding:8px 16px;text-align:center;letter-spacing:0.3px">
+    Can't reach server — retrying… (it may be waking up)
+  </div>
+
   <div id="waiting-msg">
     <strong>Waiting for data</strong>
     Set up server-side polling to begin.
@@ -836,6 +840,7 @@
     return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   function colorClass(n) { return n > 0 ? 'green' : n < 0 ? 'red' : ''; }
+  function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
   function startAgeTicker() {
     clearInterval(ageInterval);
@@ -1095,6 +1100,7 @@
       // Always show card so user can tap to enter value
       document.getElementById('elite-section').style.display = 'block';
       _eliteTotal = elite.balance || 0;
+      renderBalance();
       // Balance — only show if live data available
       const balWrap = document.getElementById('elite-balance-wrap');
       if (elite.balance > 0) {
@@ -1159,9 +1165,10 @@
     try {
       const earn = await fetch('/api/earn').then(r => r.json());
       const sec = document.getElementById('earn-section');
-      if (!earn.has_credentials || !earn.total) { sec.style.display = 'none'; _earnTotal = 0; return; }
+      if (!earn.has_credentials || !earn.total) { sec.style.display = 'none'; _earnTotal = 0; renderBalance(); return; }
       sec.style.display = 'block';
       _earnTotal = earn.total || 0;
+      renderBalance();
       document.getElementById('earn-balance').textContent =
         '$' + earn.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       // Interest display — prefer total earned, fall back to 24h
@@ -1181,16 +1188,80 @@
     } catch(e) { console.error('fetchEarn', e); }
   }
 
+  let _lastMt5 = null;
+
+  // Renders balance, return % and goal ring from the last mt5 summary plus
+  // earn/elite totals. Called again by fetchEarn/fetchElite so the total
+  // updates as soon as those arrive, not on the next 30s cycle.
+  function renderBalance() {
+    const mt5 = _lastMt5;
+    if (!mt5) return 0;
+    const displayBalance = (mt5.total_balance || 0) + _earnTotal + _eliteTotal;
+    document.getElementById('total-balance').textContent = fmtBal(displayBalance);
+    document.getElementById('total-investment').textContent = fmtBal(mt5.total_investment);
+
+    // Return % — uses displayBalance (includes earn + elite) vs invested
+    const base = (mt5.total_investment > 0) ? mt5.total_investment : displayBalance;
+    if (displayBalance && base > 0) {
+      const ret = mt5.total_investment > 0
+        ? (displayBalance - mt5.total_investment) / mt5.total_investment * 100
+        : 100;
+      const retEl = document.getElementById('return-pct');
+      retEl.textContent = (ret >= 0 ? '+' : '') + ret.toFixed(2) + '%';
+      retEl.className = colorClass(ret);
+      document.getElementById('return-item').style.display = 'block';
+    }
+
+    // Goal ring
+    const goalTarget = parseFloat(localStorage.getItem('goal_target') || '33000');
+    const ringWrap = document.getElementById('goal-ring-wrap');
+    if (goalTarget > 0 && displayBalance) {
+      const CIRC = 251.33;
+      const ratio = Math.min(displayBalance / goalTarget, 1);
+      const ringFill = document.getElementById('goal-ring-fill');
+      const ringPct  = document.getElementById('goal-ring-pct');
+      const ringRem  = document.getElementById('goal-remaining');
+      ringFill.setAttribute('stroke-dasharray', `${ratio * CIRC} ${CIRC}`);
+      ringPct.textContent = (ratio * 100).toFixed(1) + '%';
+      if (ratio >= 1) {
+        ringFill.classList.add('reached');
+        ringRem.textContent = 'REACHED!';
+        ringRem.style.color = 'var(--green)';
+      } else {
+        ringFill.classList.remove('reached');
+        const left = goalTarget - displayBalance;
+        ringRem.textContent = '$' + left.toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' left';
+        ringRem.style.color = '';
+      }
+      ringWrap.style.display = 'flex';
+    } else {
+      ringWrap.style.display = 'none';
+    }
+    return base;
+  }
+
   async function fetchData() {
     const btn = document.getElementById('refresh-btn');
     btn.disabled = true; btn.classList.add('spinning');
     try {
-      const [mt5, positions, trades, history] = await Promise.all([
+      // allSettled: one failing endpoint shouldn't blank the whole dashboard
+      const results = await Promise.allSettled([
         fetch('/api/mt5').then(r => r.json()),
         fetch('/api/mt5/positions').then(r => r.json()),
         fetch('/api/mt5/trades').then(r => r.json()),
         fetch('/api/mt5/history').then(r => r.json()),
       ]);
+      const connBanner = document.getElementById('conn-banner');
+      if (results[0].status === 'rejected') {
+        // Server unreachable (likely Render cold start) — keep stale data visible
+        connBanner.style.display = 'block';
+        return;
+      }
+      connBanner.style.display = 'none';
+      const mt5       = results[0].value;
+      const positions = results[1].status === 'fulfilled' ? results[1].value : [];
+      const trades    = results[2].status === 'fulfilled' ? results[2].value : [];
+      const history   = results[3].status === 'fulfilled' ? results[3].value : [];
 
       if (!mt5.available) return;
 
@@ -1199,48 +1270,8 @@
       lastFetchTime = Date.now();
       startAgeTicker();
 
-      // Balance — add earn + elite totals (updated by their fetchers, default to 0)
-      const displayBalance = (mt5.total_balance || 0) + _earnTotal + _eliteTotal;
-      document.getElementById('total-balance').textContent = fmtBal(displayBalance);
-      document.getElementById('total-investment').textContent = fmtBal(mt5.total_investment);
-
-      // Return % — uses displayBalance (includes earn) vs invested
-      const _base = (mt5.total_investment > 0) ? mt5.total_investment : displayBalance;
-      if (displayBalance && _base > 0) {
-        const ret = mt5.total_investment > 0
-          ? (displayBalance - mt5.total_investment) / mt5.total_investment * 100
-          : 100;
-        const retEl = document.getElementById('return-pct');
-        retEl.textContent = (ret >= 0 ? '+' : '') + ret.toFixed(2) + '%';
-        retEl.className = colorClass(ret);
-        document.getElementById('return-item').style.display = 'block';
-      }
-
-      // Goal ring
-      const goalTarget = parseFloat(localStorage.getItem('goal_target') || '33000');
-      const ringWrap = document.getElementById('goal-ring-wrap');
-      if (goalTarget > 0 && displayBalance) {
-        const CIRC = 251.33;
-        const ratio = Math.min(displayBalance / goalTarget, 1);
-        const ringFill = document.getElementById('goal-ring-fill');
-        const ringPct  = document.getElementById('goal-ring-pct');
-        const ringRem  = document.getElementById('goal-remaining');
-        ringFill.setAttribute('stroke-dasharray', `${ratio * CIRC} ${CIRC}`);
-        ringPct.textContent = (ratio * 100).toFixed(1) + '%';
-        if (ratio >= 1) {
-          ringFill.classList.add('reached');
-          ringRem.textContent = 'REACHED!';
-          ringRem.style.color = 'var(--green)';
-        } else {
-          ringFill.classList.remove('reached');
-          const left = goalTarget - displayBalance;
-          ringRem.textContent = '$' + left.toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' left';
-          ringRem.style.color = '';
-        }
-        ringWrap.style.display = 'flex';
-      } else {
-        ringWrap.style.display = 'none';
-      }
+      _lastMt5 = mt5;
+      const _base = renderBalance();
 
       // Daily PnL + badge (daily return %)
       const dpEl = document.getElementById('daily-pnl');
@@ -1383,7 +1414,7 @@
         return `<div class="trader-row">
           <div>
             <div class="trader-name-row">
-              <span class="trader-name">${t.name}</span>
+              <span class="trader-name">${esc(t.name)}</span>
               <span class="type-badge ${typeCls}">${typeLabel}</span>
             </div>
             <div class="trader-metrics">
@@ -1413,14 +1444,20 @@
     }
   }
 
-  fetchData();
-  fetchTraders();
-  fetchInvestment();
-  fetchEarn();
-  fetchElite();
-  setInterval(() => { fetchData(); fetchInvestment(); fetchEarn(); fetchElite(); }, 30_000);
-  setInterval(fetchTraders, 30_000);
-  document.getElementById('refresh-btn').addEventListener('click', () => { fetchData(); fetchTraders(); fetchInvestment(); fetchEarn(); fetchElite(); });
+  function refreshAll() {
+    return Promise.allSettled([
+      fetchData(), fetchTraders(), fetchInvestment(), fetchEarn(), fetchElite(),
+    ]);
+  }
+
+  refreshAll();
+  setInterval(() => { if (!document.hidden) refreshAll(); }, 30_000);
+  document.getElementById('refresh-btn').addEventListener('click', refreshAll);
+
+  // Refresh immediately when the app returns to the foreground (home-screen PWA)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { refreshAll(); updatePollerStatus(); }
+  });
 
   // Tabs
   document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -1451,7 +1488,7 @@
     if (!ptrActive) return; ptrActive = false;
     const dy = e.changedTouches[0].clientY - ptrStartY;
     document.getElementById('main-wrapper').style.transform = '';
-    if (dy > 60) { ptrEl.textContent = '⟳ Refreshing…'; await fetchData(); }
+    if (dy > 60) { ptrEl.textContent = '⟳ Refreshing…'; await refreshAll(); }
     ptrEl.classList.remove('visible');
   }, { passive: true });
 
@@ -1628,9 +1665,9 @@
       return `<div class="modal-trader-row">
         <div>
           <div style="display:flex;align-items:center;gap:6px">
-            <span class="modal-trader-name">${t.name}</span>${badge}
+            <span class="modal-trader-name">${esc(t.name)}</span>${badge}
           </div>
-          <div class="modal-trader-id">${t.id}</div>
+          <div class="modal-trader-id">${esc(t.id)}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0">
           <button class="btn-reset-data" onclick="resetTraderData('${t.name}')" title="Clear cached balance/investment data">Reset data</button>
