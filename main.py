@@ -580,13 +580,30 @@ def _push_data(kind: str, data, trader: str = None):
                         except (TypeError, ValueError):
                             pass
                 total += rpnl - pshare
+        # Extract the trader/copy name from each stopped-copy row so we can
+        # hide those traders from the active trader cards and avoid double-counting.
+        _NAME_KEYS = ("traderName", "followName", "nickname", "name",
+                      "traderNickName", "masterName", "copyTraderName")
+        cancelled_names: list[str] = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            for k in _NAME_KEYS:
+                v = r.get(k)
+                if v and isinstance(v, str) and v.strip():
+                    cancelled_names.append(v.strip())
+                    break
+
         new_pnl, new_count = round(total, 2), len(rows)
         if (_settings.get("cancelled_copy_pnl") != new_pnl
-                or _settings.get("cancelled_copy_count") != new_count):
+                or _settings.get("cancelled_copy_count") != new_count
+                or _settings.get("cancelled_trader_names") != cancelled_names):
             _settings["cancelled_copy_pnl"] = new_pnl
             _settings["cancelled_copy_count"] = new_count
+            _settings["cancelled_trader_names"] = cancelled_names
             _save_settings(_settings)
-            logger.info("Cancelled copies: %d entries, total net_profit=%.2f", new_count, total)
+            logger.info("Cancelled copies: %d entries, total net_profit=%.2f, names=%s",
+                        new_count, total, cancelled_names)
     elif kind == "elite_trader":
         # Elite (lead) trader portfolio — data is a single portfolio dict
         row = data if isinstance(data, dict) else {}
@@ -733,7 +750,12 @@ def _rebuild_summary() -> None:
     total_open_pnl = 0.0
     total_open_count = 0
 
+    # Traders that have been stopped — their PnL already counted in cancelled_copy_pnl
+    cancelled_names = set(_settings.get("cancelled_trader_names") or [])
+
     for name in _trader_names():
+        if name in cancelled_names:
+            continue  # PnL counted in cancelled_copy_pnl; skip to avoid double-count
         s = _rebuild_trader_summary(name)
         all_trades.extend(_tc(name)["trades"] or [])
         total_balance += s["balance"]
@@ -891,8 +913,11 @@ async def get_mt5():
 
 @app.get("/api/mt5/traders")
 async def get_mt5_traders():
+    cancelled_names = set(_settings.get("cancelled_trader_names") or [])
     summaries = []
     for name in _trader_names():
+        if name in cancelled_names:
+            continue
         tc = _tc(name)
         if tc["summary"] is None:
             _rebuild_trader_summary(name)
