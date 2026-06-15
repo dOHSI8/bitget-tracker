@@ -69,8 +69,8 @@ You'll see something like:
 {
   "data": {
     "portfolioDetails": [
-      { "portfolioId": "1443199880395776000", "pnl": "312.99" },
-      { "portfolioId": "1433276980578508800", "pnl": "-65.90" }
+      { "portfolioId": "1234567890123456789", "pnl": "312.99" },
+      { "portfolioId": "9876543210987654321", "pnl": "-65.90" }
     ]
   }
 }
@@ -99,13 +99,13 @@ Note down each `portfolioId` and the name of the trader you're copying.
 **`TRADERS` format:**
 ```
 # Single trader
-TRADERS=DKTrading:1443199880395776000
+TRADERS=TraderName:1234567890123456789
 
 # Multiple traders (comma-separated)
-TRADERS=DKTrading:1443199880395776000,XauKingScalp:1433276980578508800
+TRADERS=TraderOne:1234567890123456789,TraderTwo:9876543210987654321
 
 # Futures copy trader (add :futures)
-TRADERS=FutureTrader:1427930164156649472:futures
+TRADERS=FuturesTrader:1234567890123456789:futures
 ```
 
 6. Click **Deploy** — first build takes ~3 minutes (installs Chromium)

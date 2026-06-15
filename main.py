@@ -49,8 +49,8 @@ def _parse_traders_env() -> list[dict]:
                 })
     else:
         result.append({
-            "name": os.environ.get("TRADER_NAME", "DKTrading"),
-            "id":   os.environ.get("PORTFOLIO_ID", "1443199880395776000"),
+            "name": os.environ.get("TRADER_NAME", "TraderName"),
+            "id":   os.environ.get("PORTFOLIO_ID", "YOUR_PORTFOLIO_ID"),
             "type": "cfd",
         })
     return result

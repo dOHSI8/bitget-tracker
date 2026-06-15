@@ -7,6 +7,8 @@ services:
       - key: PORT
         value: "10000"
       - key: TRADERS
-        value: "DKTrading:1443199880395776000,XauKingScalp:1433276980578508800,FutureTrader:1427930164156649472:futures"
+        # Set your real traders here OR override in the Render dashboard env vars.
+        # Format: Name:portfolioId[:futures], comma-separated.
+        value: "TraderName:YOUR_PORTFOLIO_ID"
       - key: POLL_INTERVAL_SEC
         value: "30"

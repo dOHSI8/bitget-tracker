@@ -70,8 +70,8 @@ def _load_traders() -> tuple[dict[str, str], dict[str, str]]:
                 traders[name] = pid
                 types[name]   = ttype
     else:
-        name0 = os.environ.get("TRADER_NAME", "DKTrading")
-        traders[name0] = os.environ.get("PORTFOLIO_ID", "1443199880395776000")
+        name0 = os.environ.get("TRADER_NAME", "TraderName")
+        traders[name0] = os.environ.get("PORTFOLIO_ID", "YOUR_PORTFOLIO_ID")
         types[name0]   = "cfd"
     return traders, types
 

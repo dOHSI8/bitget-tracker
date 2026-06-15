@@ -17,7 +17,7 @@
   'use strict';
 
   // ── CONFIG ─────────────────────────────────────────────────────────────────
-  const TRACKER_URL = 'https://bitget-tracker.onrender.com';
+  const TRACKER_URL = 'https://YOUR-SERVICE-NAME.onrender.com';
 
   // ── Push to tracker ────────────────────────────────────────────────────────
   function pushToTracker(kind, data) {

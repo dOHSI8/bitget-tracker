@@ -2,9 +2,9 @@ require('dotenv').config();
 const puppeteer = require('puppeteer');
 const path = require('path');
 
-const TRACKER_URL = process.env.TRACKER_URL || 'https://bitget-tracker.onrender.com';
-const BITGET_PAGE = process.env.BITGET_PAGE || 'https://www.bitget.com/copy-trading/mt5/follower/detail?portfolioId=1443199880395776000';
-const PORTFOLIO_ID = process.env.PORTFOLIO_ID || '1443199880395776000';
+const TRACKER_URL = process.env.TRACKER_URL || 'https://YOUR-SERVICE-NAME.onrender.com';
+const BITGET_PAGE = process.env.BITGET_PAGE || 'https://www.bitget.com/copy-trading/mt5/follower/detail?portfolioId=YOUR_PORTFOLIO_ID';
+const PORTFOLIO_ID = process.env.PORTFOLIO_ID || 'YOUR_PORTFOLIO_ID';
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS) || 60_000;
 const SCRAPE_INTERVAL = parseInt(process.env.SCRAPE_INTERVAL_MS) || 30_000;
 const REFRESH_INTERVAL = parseInt(process.env.REFRESH_INTERVAL_MS) || 3_600_000;

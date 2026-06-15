@@ -3,7 +3,7 @@
 ## What this is
 FastAPI backend + Playwright scraper + iPhone Scriptable widget.
 Tracks a **copy trading FOLLOWER** account on Bitget (following trader "DKTrading").
-Deployed on Render free tier: `https://bitget-tracker-v2.onrender.com`
+Deployed on Render free tier: `https://YOUR-SERVICE-NAME.onrender.com`
 
 ## Architecture
 - `main.py` — FastAPI app, in-memory state (`_mt5`, `_settings`), `/api/widget`, `/api/poller`

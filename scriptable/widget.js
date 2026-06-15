@@ -1,7 +1,7 @@
 // Bitget Tracker — Scriptable widget
 // Works in: home screen widget, lock screen widget, Scriptable app, iOS Shortcut
 
-const BASE_URL = "https://bitget-tracker-v2.onrender.com";
+const BASE_URL = "https://YOUR-SERVICE-NAME.onrender.com";
 
 const GREEN = new Color("#00c47a");
 const RED   = new Color("#ff4d4d");

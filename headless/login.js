@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const path = require('path');
 const readline = require('readline');
 
-const BITGET_PAGE = process.env.BITGET_PAGE || 'https://www.bitget.com/copy-trading/mt5/follower/detail?portfolioId=1443199880395776000';
+const BITGET_PAGE = process.env.BITGET_PAGE || 'https://www.bitget.com/copy-trading/mt5/follower/detail?portfolioId=YOUR_PORTFOLIO_ID';
 const USER_DATA_DIR = path.join(__dirname, 'browser-data');
 
 async function main() {
