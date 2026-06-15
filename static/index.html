@@ -1054,10 +1054,15 @@
     if (!trades || !trades.length) { el.innerHTML = '<div class="empty">No trade history</div>'; return; }
     const rows = trades.map(t => {
       const cls = colorClass(t.pnl);
+      const hasPrice = t.open_price > 0 || t.close_price > 0;
+      const priceStr = hasPrice
+        ? `${t.open_price > 0 ? t.open_price.toFixed(2) : '—'} → ${t.close_price > 0 ? t.close_price.toFixed(2) : '—'}`
+        : '';
       return `<tr>
         <td><strong>${t.symbol}</strong><br><span style="font-size:10px;color:var(--muted)">${t.time}</span></td>
         <td><span class="side-badge ${t.side}">${t.side.toUpperCase()}</span><br>
             <span class="mono" style="font-size:10px;color:var(--muted)">${t.size}</span></td>
+        <td class="mono" style="font-size:10px;color:var(--muted);text-align:right">${priceStr}</td>
         <td style="text-align:right">
           <div class="mono ${cls}" style="font-weight:600">${fmt(t.pnl)}</div>
           <div class="mono" style="font-size:10px;color:var(--muted)">$${t.commission}</div>
@@ -1065,7 +1070,7 @@
       </tr>`;
     }).join('');
     el.innerHTML = `<table class="data-table">
-      <thead><tr><th>Trade</th><th>Side</th><th style="text-align:right">PnL</th></tr></thead>
+      <thead><tr><th>Trade</th><th>Side</th><th style="text-align:right">Open → Close</th><th style="text-align:right">PnL</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
   }
 
