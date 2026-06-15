@@ -25,6 +25,12 @@ CHROMIUM_ARGS = [
     "--enable-low-end-device-mode",
 ]
 
+# Trade history is persisted server-side (history.json) and merged on each push.
+# So the poller only needs the latest page most cycles; a full 30-day backfill
+# runs once per process (after startup / redeploy) and periodically thereafter.
+_history_full_done: set[str] = set()
+_HISTORY_FULL_EVERY = 120   # full re-scan every N cycles (~60 min at 30s interval)
+
 _status = {
     "running": False,
     "browser_alive": False,
@@ -317,21 +323,32 @@ async def _active_poll(page, push_fn: Callable,
 
 async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str):
     """
-    Fetch up to 30 days of closed position history.
+    Fetch closed position history.
+
+    Server-side history.json is the source of truth — it merges and dedupes
+    every push. So most cycles only fetch page 1 (the latest 50 closed trades),
+    which is more than enough to catch newly-settled trades at a 30s interval.
+
+    A full 30-day backfill (all pages) runs only:
+      • the first time we poll this trader after process start / redeploy
+      • every _HISTORY_FULL_EVERY cycles thereafter (gap recovery)
 
     positionHistory ignores pageNo > 1 but respects endTime for cursor pagination.
     The API caps each response at 50 rows regardless of pageSize.
     We walk backwards using endTime = oldest close time of previous batch.
     """
+    polls = _status.get("polls", 0)
+    need_full = (trader_name not in _history_full_done) or (polls % _HISTORY_FULL_EVERY == 0)
+    max_batches = 25 if need_full else 1   # 25 = ~1250 trades / 30 days
+
     cutoff_ms = int((datetime.now(BKK) - timedelta(days=30)).timestamp() * 1000)
     all_rows: list = []
     end_time_ms: int | None = None   # None = no filter (get latest batch first)
     API_PAGE_CAP = 50   # API hard cap; pageSize param is ignored above this
-    MAX_BATCHES = 25    # safety cap (~1250 trades / 30 days)
     prev_oldest: int | None = None  # detect if endTime is being ignored
 
     try:
-        for batch in range(MAX_BATCHES):
+        for batch in range(max_batches):
             body: dict = {"portfolioId": pid, "pageSize": API_PAGE_CAP}
             if end_time_ms is not None:
                 body["endTime"] = end_time_ms
@@ -402,9 +419,12 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
             end_time_ms = oldest - 1
 
         if all_rows:
-            logger.info("CFD history[%s]: %d trades across %d batches",
-                        trader_name, len(all_rows), batch + 1)
+            mode = "full" if need_full else "page1"
+            logger.info("CFD history[%s]: %d trades across %d batches (%s)",
+                        trader_name, len(all_rows), batch + 1, mode)
             push_fn("history", {"code": "200", "data": {"rows": all_rows}}, trader_name)
+            if need_full:
+                _history_full_done.add(trader_name)
 
     except Exception as e:
         logger.warning("CFD history[%s] error: %s", trader_name, e)
