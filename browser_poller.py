@@ -246,20 +246,27 @@ async def _probe_positions(page, push_fn: Callable,
     portfolio-page navigation.  tracePosition typically works without the
     portfolio-page cookie, so this gets position data ~15-20 s earlier than
     if we waited for the full warmup sequence.
+
+    Stops probing on the FIRST 200 response (any code).  A 200/00004 means
+    "no open positions but cookie is alive" — still calls _mark_scrape() so
+    the dashboard age-timer resets even when there is nothing to push.
+    Stops immediately on a browser/page-crash exception to avoid wasting time
+    on probes that will all fail.
     """
     cfd_pids = [p for n, p in traders.items() if trader_types.get(n, "cfd") == "cfd"]
     if not cfd_pids:
         return
     pid0 = cfd_pids[0]
     pos_probes = []
-    pos_found = False
+    done = False   # set True to exit both loops
+
     for ep in [
         "/v1/trace/mt5/data/tracePosition",       # confirmed 200+rows
         "/v1/trace/mt5/trace/getFollowOpenPosition",
         "/v1/trace/mt5/trace/myFollowOpenPosition",
         "/v1/trace/mt5/trace/getFollowOpenOrder",
     ]:
-        if pos_found:
+        if done:
             break
         for label, body in [("portfolioId", {"portfolioId": pid0}),
                              ("followId", {"followPortfolioId": pid0}),
@@ -288,16 +295,28 @@ async def _probe_positions(page, push_fn: Callable,
                 pos_probes.append({"ep": ep, "body": label, "status": result.get("status"),
                                    "code": code, "rows": result.get("row_count"),
                                    "error": result.get("error")})
-                if isinstance(result, dict) and result.get("status") == 200 and code in ("00000", "200", "0"):
-                    logger.info("CFD positions found ep=%s body=%s rows=%s",
-                                ep, label, result.get("row_count"))
+                if isinstance(result, dict) and result.get("status") == 200:
+                    # Any 200 proves the cookie is alive — update scrape timer now
+                    # regardless of whether positions were returned.
                     _status["auth_ok"] = True
-                    _mark_scrape()  # cookie is alive — update timer immediately
-                    push_fn("positions", result.get("data") or {})
-                    pos_found = True
+                    _mark_scrape()
+                    if code in ("00000", "200", "0"):
+                        logger.info("CFD positions found ep=%s body=%s rows=%s",
+                                    ep, label, result.get("row_count"))
+                        push_fn("positions", result.get("data") or {})
+                    else:
+                        logger.info("CFD positions probe 200/%s (no positions) ep=%s body=%s",
+                                    code, ep, label)
+                    done = True   # cookie confirmed — no need to probe more endpoints
                     break
             except Exception as ex:
-                pos_probes.append({"ep": ep, "body": label, "error": str(ex)})
+                err_str = str(ex)
+                pos_probes.append({"ep": ep, "body": label, "error": err_str})
+                # Page/browser crashed — stop all probing; remaining calls will
+                # fail too and history/balance will be skipped this cycle.
+                if "closed" in err_str.lower() or "browser" in err_str.lower():
+                    done = True
+                    break
     _status["last_pos_response"] = pos_probes[0] if pos_probes else {}
     _status["last_pos_probes"] = pos_probes
 
