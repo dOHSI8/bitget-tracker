@@ -53,6 +53,17 @@ async function tryRefreshSession(options = {}) {
         await page.goto('https://www.bitget.com', { waitUntil: 'networkidle2', timeout: 30000 });
         await sleep(3000);
 
+        // CRITICAL: verify the session is actually authenticated. Navigating
+        // with a dead cookie still leaves cookies in the jar, so "the cookie
+        // exists" is NOT proof the session works. Call a real authenticated
+        // endpoint and check Bitget's response code/message. Without this we
+        // would happily push a dead cookie back to the tracker (false success).
+        const authed = await isSessionAuthenticated(page);
+        if (!authed) {
+            console.log('[Login] session NOT authenticated after navigation — refresh failed, full login required');
+            return { success: false, reason: 'not_authenticated' };
+        }
+
         const newCookies = await page.cookies('https://www.bitget.com');
         const newSession = newCookies.find(c => c.name === 'bt_newsessionid');
         if (!newSession || !newSession.value) {
@@ -66,16 +77,7 @@ async function tryRefreshSession(options = {}) {
         const expiryStr = newExpiry > 0
             ? new Date(newExpiry * 1000).toISOString()
             : 'unknown';
-
-        if (newExpiry > oldExpiry) {
-            console.log(`[Login] refresh OK — cookie extended (expires ${expiryStr})`);
-        } else {
-            console.log(`[Login] session still valid — cookies re-saved (expires ${expiryStr})`);
-            if (requireExtendedExpiry) {
-                console.log('[Login] silent refresh did not extend expiry — full login required');
-                return { success: false, reason: 'expiry_not_extended', newExpiry: expiryStr };
-            }
-        }
+        console.log(`[Login] session verified authenticated — cookies saved (expires ${expiryStr})`);
         return { success: true, newExpiry: expiryStr, expiryExtended: newExpiry > oldExpiry };
 
     } catch (err) {
@@ -290,6 +292,35 @@ async function clickButton(page, buttonText, stepLabel) {
 
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
+}
+
+/**
+ * Ask Bitget whether the current cookies actually authenticate, by calling a
+ * known authenticated endpoint from within the page (credentials: 'include').
+ * Returns false on the "Log in expired" sentinel (code 00004 / message), on an
+ * HTML/Cloudflare redirect, or on any error. This is the honest check that
+ * "the cookie exists" cannot give us.
+ */
+async function isSessionAuthenticated(page) {
+    try {
+        return await page.evaluate(async () => {
+            try {
+                const r = await fetch('/v1/trace/mt5/trace/getFollowPortfolios', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const text = await r.text();
+                if (text.trimStart().startsWith('<')) return false; // CF / login redirect
+                const j = JSON.parse(text);
+                const msg = (j && j.msg ? String(j.msg) : '').toLowerCase();
+                if (msg.includes('expired') || msg.includes('re-log') || msg.includes('log in')) return false;
+                return ['00000', '200', '0'].includes(String(j && j.code));
+            } catch { return false; }
+        });
+    } catch {
+        return false;
+    }
 }
 
 /** Read data/cookies.txt (base64-encoded JSON, or raw JSON) → cookie array. */
