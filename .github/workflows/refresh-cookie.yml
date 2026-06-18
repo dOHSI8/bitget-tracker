@@ -31,12 +31,13 @@ jobs:
       - name: Install headless deps
         working-directory: headless
         # npm ci installs exact versions from package-lock.json — no floating
-        # semver resolution. --ignore-scripts prevents arbitrary postinstall
-        # hooks from running; we then install Chrome explicitly via puppeteer.
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          npx puppeteer browsers install chrome
-
+        # semver resolution, so a compromised patch release can't sneak in.
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        
+      - name: Install Chrome for Puppeteer
+        working-directory: headless
+        run: npx puppeteer browsers install chrome
+        
       - name: Refresh and push cookie
         working-directory: headless
         env:
