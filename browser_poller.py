@@ -361,10 +361,8 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
       • the first time we poll this trader after process start / redeploy
       • every _HISTORY_FULL_EVERY cycles thereafter (gap recovery)
 
-    Pagination strategy: Phase 1 tries endTime cursor; if the API ignores it
-    (same oldest timestamp after 2 batches), Phase 2 falls back to pageNo.
-    Both are tried so older history is recovered regardless of which the API
-    currently respects.
+    The API caps each response at 50 rows regardless of pageSize.
+    We walk backwards using endTime = oldest close time of previous batch.
     """
     polls = _status.get("polls", 0)
     need_full = (trader_name not in _history_full_done) or (polls % _HISTORY_FULL_EVERY == 0)
@@ -372,56 +370,32 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
 
     cutoff_ms = int((datetime.now(BKK) - timedelta(days=365)).timestamp() * 1000)
     all_rows: list = []
-    seen_keys: set = set()
+    end_time_ms: int | None = None
     API_PAGE_CAP = 50
-
-    def _row_key(r: dict) -> str:
-        ct = r.get("closeTime") or r.get("closedAt") or r.get("closeTs") or r.get("ctime") or ""
-        return f"{ct}_{r.get('symbol', '')}"
-
-    def _add_rows(rows: list) -> int:
-        added = 0
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            k = _row_key(r)
-            if k not in seen_keys:
-                seen_keys.add(k)
-                all_rows.append(r)
-                added += 1
-        return added
-
-    _JS_FETCH = """async ([pid, body]) => {
-        try {
-            const r = await fetch('/v1/trace/mt5/trace/positionHistory', {
-                method: 'POST', credentials: 'include',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(body),
-            });
-            const text = await r.text();
-            if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
-            const j = JSON.parse(text);
-            return {status: r.status, data: j};
-        } catch(e) { return {status: 0, error: String(e)}; }
-    }"""
-
-    batches_run = 0
-    endtime_broken = False
+    prev_oldest: int | None = None
 
     try:
-        # ── Phase 1: endTime cursor pagination ────────────────────────────
-        end_time_ms: int | None = None
-        prev_oldest: int | None = None
-
         for batch in range(max_batches):
-            body: dict = {"portfolioId": pid, "pageSize": API_PAGE_CAP, "pageNo": batch + 1}
+            body: dict = {"portfolioId": pid, "pageSize": API_PAGE_CAP}
             if end_time_ms is not None:
                 body["endTime"] = end_time_ms
 
-            hist = await page.evaluate(_JS_FETCH, [pid, body])
+            hist = await page.evaluate("""async ([pid, body]) => {
+                try {
+                    const r = await fetch('/v1/trace/mt5/trace/positionHistory', {
+                        method: 'POST', credentials: 'include',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                    const text = await r.text();
+                    if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
+                    const j = JSON.parse(text);
+                    return {status: r.status, data: j};
+                } catch(e) { return {status: 0, error: String(e)}; }
+            }""", [pid, body])
+
             api_code = (hist.get("data") or {}).get("code")
             api_msg  = (hist.get("data") or {}).get("msg")
-            batches_run += 1
 
             if batch == 0:
                 logger.info("CFD history[%s]: HTTP %s code=%s err=%s",
@@ -445,13 +419,12 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
             if not rows:
                 break
 
-            _add_rows(rows)
+            all_rows.extend(rows)
             oldest = _oldest_close_ms(rows)
 
             if oldest is not None and oldest == prev_oldest:
-                logger.info("CFD history[%s]: endTime ignored at batch %d, switching to pageNo",
+                logger.info("CFD history[%s]: endTime ignored by API, stopping at batch %d",
                             trader_name, batch + 1)
-                endtime_broken = True
                 break
             prev_oldest = oldest
 
@@ -463,52 +436,10 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
                 break
             end_time_ms = oldest - 1
 
-        # ── Phase 2: pageNo fallback if endTime was ignored ───────────────
-        if endtime_broken and need_full:
-            logger.info("CFD history[%s]: falling back to pageNo from page 2", trader_name)
-            for page_no in range(2, max_batches + 1):
-                body = {"portfolioId": pid, "pageSize": API_PAGE_CAP, "pageNo": page_no}
-                hist = await page.evaluate(_JS_FETCH, [pid, body])
-                batches_run += 1
-                api_code = (hist.get("data") or {}).get("code")
-
-                if hist.get("error") == "html_redirect" or api_code == "00004":
-                    break
-                if hist.get("status") != 200 or api_code not in ("00000", "200", "0"):
-                    break
-
-                rows = _extract_rows(hist.get("data") or {})
-                if not rows:
-                    break
-
-                added = _add_rows(rows)
-                if added == 0:
-                    logger.info("CFD history[%s]: pageNo also returning duplicates at page %d — API limit reached",
-                                trader_name, page_no)
-                    break
-
-                oldest = _oldest_close_ms(rows)
-                if oldest and oldest < cutoff_ms:
-                    break
-                if len(rows) < API_PAGE_CAP:
-                    break
-
         if all_rows:
             mode = "full" if need_full else "page1"
-            all_oldest = min(
-                (ms for r in all_rows if (ms := _oldest_close_ms([r])) is not None),
-                default=None,
-            )
-            oldest_str = _ms_to_bkk_date(all_oldest) if all_oldest else "?"
-            logger.info("CFD history[%s]: %d trades across %d batches (%s, oldest=%s)",
-                        trader_name, len(all_rows), batches_run, mode, oldest_str)
-            _status["last_hist_response"] = {
-                **(_status.get("last_hist_response") or {}),
-                "total_trades": len(all_rows),
-                "batches": batches_run,
-                "oldest_date": oldest_str,
-                "endtime_broken": endtime_broken,
-            }
+            logger.info("CFD history[%s]: %d trades across %d batches (%s)",
+                        trader_name, len(all_rows), batch + 1, mode)
             push_fn("history", {"code": "200", "data": {"rows": all_rows}}, trader_name)
             if need_full:
                 _history_full_done.add(trader_name)
