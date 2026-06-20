@@ -579,6 +579,7 @@ async def _fetch_balance(page, push_fn: Callable,
     for trader_name, pid in fut_traders.items():
         await _fetch_futures_balance(page, push_fn, trader_name, pid)
 
+    await _fetch_elite_overview(page, push_fn)
     await _fetch_elite_portfolio(page, push_fn)
 
 
@@ -955,6 +956,59 @@ _elite_ep:     str | None = None
 _elite_method: str        = "POST"
 _ELITE_REPROBE_EVERY = 30   # full sweep is ~40 requests; only run it occasionally
 _elite_probe_count = 0
+
+
+async def _fetch_elite_overview(page, push_fn: Callable):
+    """Fetch the user's active elite trader portfolio overview via /v1/trace/mt5/portfolio/overview.
+
+    Pushes 'elite_overview' with the publicPortfolioOverview dict when active,
+    or {"active": False} when the user has no active portfolio.
+    """
+    extra_headers = _elite_extra_headers()
+    try:
+        result = await page.evaluate("""async (extraHeaders) => {
+            try {
+                const headers = {'Content-Type': 'application/json', ...extraHeaders};
+                const r = await fetch('/v1/trace/mt5/portfolio/overview', {
+                    method: 'POST', credentials: 'include',
+                    headers,
+                    body: JSON.stringify({}),
+                });
+                const text = await r.text();
+                if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
+                const j = JSON.parse(text);
+                const overview = j?.data?.publicPortfolioOverview || null;
+                return {status: r.status, code: j?.code, msg: j?.msg,
+                        overview, has_active: overview !== null,
+                        raw_snippet: text.slice(0, 200)};
+            } catch(e) { return {status: 0, error: String(e)}; }
+        }""", extra_headers)
+    except Exception as e:
+        _status["elite_overview"] = {"error": str(e)}
+        logger.warning("_fetch_elite_overview error: %s", e)
+        return
+
+    if not isinstance(result, dict):
+        return
+
+    http = result.get("status", 0)
+    code = result.get("code")
+    _status["elite_overview"] = {
+        "http": http, "code": code, "has_active": result.get("has_active"),
+        "error": result.get("error"),
+    }
+    logger.info("Elite overview: http=%s code=%s has_active=%s err=%s",
+                http, code, result.get("has_active"), result.get("error"))
+
+    if result.get("error") == "html_redirect":
+        _status["auth_ok"] = False
+        return
+    if http == 200 and code in ("00000", "200", "0"):
+        overview = result.get("overview")
+        if isinstance(overview, dict):
+            push_fn("elite_overview", {**overview, "active": True})
+        else:
+            push_fn("elite_overview", {"active": False})
 
 
 async def _fetch_elite_portfolio(page, push_fn: Callable):

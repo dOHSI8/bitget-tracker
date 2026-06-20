@@ -209,6 +209,12 @@ _elite: dict = {
     "error": None,
 }
 
+_elite_overview: dict = {
+    "data": None,        # publicPortfolioOverview fields + active:bool
+    "fetched_at": None,
+    "error": None,
+}
+
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
 
@@ -648,6 +654,31 @@ def _push_data(kind: str, data, trader: str = None):
         _elite["error"] = None
         logger.info("Elite trader: balance=%.2f all_time=%.2f followers=%d",
                     balance, all_time, followers)
+    elif kind == "elite_overview":
+        row = data if isinstance(data, dict) else {}
+        active = row.get("active", False)
+        if active:
+            _elite_overview["data"] = {
+                "active": True,
+                "balance": _fv("avlBalance", src=row),
+                "equity": _fv("totalEquity", "estimatedAssets", src=row),
+                "unrealized_pnl": _fv("unrealizedProfit", src=row),
+                "total_profit": _fv("profit", src=row),
+                "copiers_profit": _fv("followProfit", src=row),
+                "roi": _fv("roi", src=row),
+                "aum": _fv("aum", src=row),
+                "copiers_current": int(row.get("curFollowCount") or 0),
+                "copiers_max": int(row.get("maxFollowCount") or 100),
+                "share_ratio": _fv("maxShareRatio", "sharingRatio", src=row),
+                "portfolio_id": row.get("portfolioId"),
+                "trading_days": int(row.get("tradingDay") or 0),
+            }
+        else:
+            _elite_overview["data"] = {"active": False}
+        _elite_overview["fetched_at"] = datetime.now(BKK).isoformat()
+        _elite_overview["error"] = None
+        logger.info("Elite overview: active=%s balance=%s roi=%s",
+                    active, row.get("avlBalance"), row.get("roi"))
     elif kind == "fund_flow":
         # Futures copy trading transfer history — compute net investment.
         # Only applies to futures traders; ignore if type has already changed to cfd
@@ -1293,6 +1324,28 @@ async def get_elite():
         "fetched_at": _elite["fetched_at"],
         "error": _elite["error"],
         "available": _elite["data"] is not None or abs(settings_pnl) >= 0.01,
+    }
+
+
+@app.get("/api/elite/overview")
+async def get_elite_overview():
+    data = _elite_overview["data"] or {}
+    return {
+        "active": data.get("active", False),
+        "balance": data.get("balance", 0.0),
+        "equity": data.get("equity", 0.0),
+        "unrealized_pnl": data.get("unrealized_pnl", 0.0),
+        "total_profit": data.get("total_profit", 0.0),
+        "copiers_profit": data.get("copiers_profit", 0.0),
+        "roi": data.get("roi", 0.0),
+        "aum": data.get("aum", 0.0),
+        "copiers_current": data.get("copiers_current", 0),
+        "copiers_max": data.get("copiers_max", 100),
+        "share_ratio": data.get("share_ratio", 0.0),
+        "portfolio_id": data.get("portfolio_id"),
+        "trading_days": data.get("trading_days", 0),
+        "fetched_at": _elite_overview["fetched_at"],
+        "error": _elite_overview["error"],
     }
 
 

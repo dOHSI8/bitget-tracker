@@ -626,6 +626,54 @@
       </div>
     </div>
 
+    <!-- Elite Overview card (active leader portfolio) — hidden when no active portfolio -->
+    <div id="elite-overview-section" style="display:none">
+      <div class="trader-row">
+        <div style="flex:1;min-width:0">
+          <div class="trader-name-row">
+            <span class="trader-name">Elite Portfolio</span>
+            <span class="type-badge futures">ACTIVE</span>
+          </div>
+          <div class="trader-metrics">
+            <div>
+              <div class="trader-metric-label">Balance</div>
+              <div class="trader-metric-val green" id="eo-balance">—</div>
+            </div>
+            <div>
+              <div class="trader-metric-label">Equity</div>
+              <div class="trader-metric-val" id="eo-equity">—</div>
+            </div>
+            <div>
+              <div class="trader-metric-label">Copiers</div>
+              <div class="trader-metric-val" id="eo-copiers">—</div>
+            </div>
+            <div>
+              <div class="trader-metric-label">AUM</div>
+              <div class="trader-metric-val" id="eo-aum">—</div>
+            </div>
+          </div>
+          <div class="trader-metrics" style="margin-top:6px">
+            <div>
+              <div class="trader-metric-label">Total Profit</div>
+              <div class="trader-metric-val" id="eo-total-profit">—</div>
+            </div>
+            <div>
+              <div class="trader-metric-label">Copiers' Profit</div>
+              <div class="trader-metric-val" id="eo-copiers-profit">—</div>
+            </div>
+            <div>
+              <div class="trader-metric-label">Unrealized PnL</div>
+              <div class="trader-metric-val" id="eo-unrealized">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="trader-right">
+          <div class="trader-alltime-label">ROI</div>
+          <div class="trader-alltime" id="eo-roi">—</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Earn card — same style as trader rows, no divider -->
     <div id="earn-section" style="display:none">
       <div class="trader-row">
@@ -1163,6 +1211,39 @@
     } catch(e) { console.error('fetchElite', e); }
   }
 
+  async function fetchEliteOverview() {
+    try {
+      const eo = await fetch('/api/elite/overview').then(r => r.json());
+      const sec = document.getElementById('elite-overview-section');
+      if (!eo.active) { sec.style.display = 'none'; return; }
+      sec.style.display = 'block';
+
+      const fmtMoney = v => '$' + parseFloat(v || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      const colorVal = v => parseFloat(v || 0) >= 0 ? 'green' : 'red';
+
+      document.getElementById('eo-balance').textContent = fmtMoney(eo.balance);
+      document.getElementById('eo-equity').textContent = fmtMoney(eo.equity);
+      document.getElementById('eo-copiers').textContent = eo.copiers_current + '/' + eo.copiers_max;
+      document.getElementById('eo-aum').textContent = fmtMoney(eo.aum);
+
+      const tpEl = document.getElementById('eo-total-profit');
+      tpEl.textContent = fmtMoney(eo.total_profit);
+      tpEl.className = 'trader-metric-val ' + colorVal(eo.total_profit);
+
+      const cpEl = document.getElementById('eo-copiers-profit');
+      cpEl.textContent = fmtMoney(eo.copiers_profit);
+      cpEl.className = 'trader-metric-val ' + colorVal(eo.copiers_profit);
+
+      const unEl = document.getElementById('eo-unrealized');
+      unEl.textContent = fmtMoney(eo.unrealized_pnl);
+      unEl.className = 'trader-metric-val ' + colorVal(eo.unrealized_pnl);
+
+      const roiEl = document.getElementById('eo-roi');
+      roiEl.textContent = parseFloat(eo.roi || 0).toFixed(2) + '%';
+      roiEl.className = 'trader-alltime ' + colorVal(eo.roi);
+    } catch(e) { console.error('fetchEliteOverview', e); }
+  }
+
   // Shared tap-to-edit prompt for manual P&L overrides saved via /api/settings
   async function editManualPnl(settingKey, promptLabel, currentText) {
     const input = prompt(promptLabel + '\nLeave blank to clear.', currentText.replace(/[^0-9.\-]/g, ''));
@@ -1541,7 +1622,7 @@
 
   function refreshAll() {
     return Promise.allSettled([
-      fetchData(), fetchTraders(), fetchInvestment(), fetchEarn(), fetchElite(),
+      fetchData(), fetchTraders(), fetchInvestment(), fetchEarn(), fetchElite(), fetchEliteOverview(),
     ]);
   }
 
