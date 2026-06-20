@@ -786,7 +786,11 @@ def _rebuild_summary() -> None:
 
     cancelled_copy_pnl = round(_settings.get("cancelled_copy_pnl", 0.0), 2)
     cancelled_copy_count = _settings.get("cancelled_copy_count", 0)
-    elite_all_time_pnl = round(_settings.get("elite_all_time_pnl", 0.0), 2)
+    _live_elite_pnl = (_elite.get("data") or {}).get("all_time_pnl")
+    elite_all_time_pnl = round(
+        _live_elite_pnl if _live_elite_pnl is not None else _settings.get("elite_all_time_pnl", 0.0),
+        2,
+    )
 
     _mt5["summary"] = {
         "daily_pnl": round(total_daily_pnl, 4),
