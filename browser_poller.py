@@ -972,7 +972,7 @@ async def _fetch_elite_portfolio(page, push_fn: Callable):
                 const r = await fetch('/v1/trace/mt5/portfolio/getPortfolioHistory', {
                     method: 'POST', credentials: 'include',
                     headers,
-                    body: JSON.stringify({type: 1, sortRule: 1}),
+                    body: JSON.stringify({type: 1, sortRule: 1, sort: 1}),
                 });
                 const text = await r.text();
                 if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
