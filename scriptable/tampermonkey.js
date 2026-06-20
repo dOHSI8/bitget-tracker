@@ -32,6 +32,16 @@
 
   // ── Detect data type from URL and response ────────────────────────────────
   function classifyAndPush(url, data) {
+    // Elite (lead) trader portfolio history → all_time_pnl
+    if (url.includes('/portfolio/getPortfolioHistory')) {
+      const rows = data?.data?.rows || [];
+      if (rows.length > 0) {
+        console.log('[Bitget Tracker] captured elite portfolio totalProfit=', rows[0].totalProfit);
+        pushToTracker('elite_trader', rows[0]);
+      }
+      return;
+    }
+
     // Open positions
     if (url.includes('/tracePosition') || url.includes('/trace_position')) {
       console.log('[Bitget Tracker] captured positions');
@@ -169,6 +179,23 @@
       });
       if (r.ok) { pushToTracker('history', await r.json()); }
     } catch (e) { console.warn('[Bitget Tracker] history error:', e); }
+
+    // Elite portfolio P&L
+    try {
+      const r = await fetch('/v1/trace/mt5/portfolio/getPortfolioHistory', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (r.ok) {
+        const json = await r.json();
+        const rows = json?.data?.rows || [];
+        if (rows.length > 0) {
+          console.log('[Bitget Tracker] polled elite portfolio totalProfit=', rows[0].totalProfit);
+          pushToTracker('elite_trader', rows[0]);
+        }
+      }
+    } catch (e) { console.warn('[Bitget Tracker] elite portfolio error:', e); }
 
     // Balance history (try common endpoint patterns)
     for (const ep of [
