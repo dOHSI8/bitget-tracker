@@ -1375,11 +1375,18 @@ async def set_poller_cookie(request: Request):
     cookie = body.get("cookie", "").strip()
     if not cookie:
         return {"ok": False, "error": "No cookie provided"}
-    COOKIES_FILE.write_text(json.dumps({
+    local_storage = body.get("localStorage") or {}
+    payload: dict = {
         "cookie": cookie,
         "updated": datetime.now(BKK).isoformat(),
-    }))
-    logger.info("Poller cookie updated (%d chars)", len(cookie))
+    }
+    if isinstance(local_storage, dict) and local_storage:
+        payload["local_storage"] = local_storage
+        logger.info("Poller cookie updated (%d chars) + localStorage (%d keys)",
+                    len(cookie), len(local_storage))
+    else:
+        logger.info("Poller cookie updated (%d chars)", len(cookie))
+    COOKIES_FILE.write_text(json.dumps(payload))
     from browser_poller import reset_auth_status
     reset_auth_status()
     return {"ok": True, "length": len(cookie)}
