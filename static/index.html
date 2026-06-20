@@ -595,37 +595,6 @@
       <div id="traders-cards"></div>
     </div>
 
-    <!-- Elite trader card -->
-    <div id="elite-section" style="display:none">
-      <div class="trader-row" style="cursor:pointer" onclick="editElitePnl()" title="Tap to edit PnL">
-        <div>
-          <div class="trader-name-row">
-            <span class="trader-name">Elite Portfolio</span>
-            <span class="type-badge futures">LEADER</span>
-          </div>
-          <div class="trader-metrics">
-            <div id="elite-balance-wrap" style="display:none">
-              <div class="trader-metric-label">Balance</div>
-              <div class="trader-metric-val green" id="elite-balance">—</div>
-            </div>
-            <div id="elite-aum-wrap" style="display:none">
-              <div class="trader-metric-label">AUM</div>
-              <div class="trader-metric-val" id="elite-aum">—</div>
-            </div>
-            <div id="elite-daily-wrap" style="display:none">
-              <div class="trader-metric-label">Today</div>
-              <div class="trader-metric-val" id="elite-daily">—</div>
-            </div>
-          </div>
-        </div>
-        <div class="trader-right">
-          <div class="trader-alltime-label" id="elite-alltime-label" style="display:none">ALL TIME P&amp;L</div>
-          <div class="trader-alltime" id="elite-alltime" style="display:none">—</div>
-          <div style="font-size:10px;color:var(--muted);margin-top:2px" id="elite-followers"></div>
-        </div>
-      </div>
-    </div>
-
     <!-- Elite Overview card (active leader portfolio) — hidden when no active portfolio -->
     <div id="elite-overview-section" style="display:none">
       <div class="trader-row">
@@ -714,6 +683,37 @@
         </div>
         <div class="trader-right" style="justify-content:flex-end;align-items:center">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:var(--muted);flex-shrink:0" title="Edit"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm17.71-10.21a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- Elite trader card (closed portfolio) -->
+    <div id="elite-section" style="display:none">
+      <div class="trader-row" style="cursor:pointer" onclick="editElitePnl()" title="Tap to edit PnL">
+        <div>
+          <div class="trader-name-row">
+            <span class="trader-name">Elite Portfolio</span>
+            <span class="type-badge futures">CLOSED</span>
+          </div>
+          <div class="trader-metrics">
+            <div id="elite-balance-wrap" style="display:none">
+              <div class="trader-metric-label">Balance</div>
+              <div class="trader-metric-val green" id="elite-balance">—</div>
+            </div>
+            <div id="elite-aum-wrap" style="display:none">
+              <div class="trader-metric-label">AUM</div>
+              <div class="trader-metric-val" id="elite-aum">—</div>
+            </div>
+            <div id="elite-daily-wrap" style="display:none">
+              <div class="trader-metric-label">Today</div>
+              <div class="trader-metric-val" id="elite-daily">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="trader-right">
+          <div class="trader-alltime-label" id="elite-alltime-label" style="display:none">ALL TIME P&amp;L</div>
+          <div class="trader-alltime" id="elite-alltime" style="display:none">—</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px" id="elite-followers"></div>
         </div>
       </div>
     </div>
