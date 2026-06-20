@@ -969,18 +969,29 @@ async def _fetch_elite_overview(page, push_fn: Callable):
         result = await page.evaluate("""async (extraHeaders) => {
             try {
                 const headers = {'Content-Type': 'application/json', ...extraHeaders};
-                const r = await fetch('/v1/trace/mt5/portfolio/overview', {
-                    method: 'POST', credentials: 'include',
-                    headers,
-                    body: JSON.stringify({}),
-                });
-                const text = await r.text();
-                if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
-                const j = JSON.parse(text);
-                const overview = j?.data?.publicPortfolioOverview || null;
-                return {status: r.status, code: j?.code, msg: j?.msg,
-                        overview, has_active: overview !== null,
-                        raw_snippet: text.slice(0, 200)};
+                const [r1, r2] = await Promise.all([
+                    fetch('/v1/trace/mt5/portfolio/overview', {
+                        method: 'POST', credentials: 'include', headers,
+                        body: JSON.stringify({}),
+                    }),
+                    fetch('/v1/trace/mt5/portfolio/getSettleSummary', {
+                        method: 'POST', credentials: 'include', headers,
+                        body: JSON.stringify({}),
+                    }),
+                ]);
+                const text1 = await r1.text();
+                if (text1.trimStart().startsWith('<')) return {status: r1.status, error: 'html_redirect'};
+                const j1 = JSON.parse(text1);
+                const overview = j1?.data?.publicPortfolioOverview || null;
+                let settle = null;
+                try {
+                    const text2 = await r2.text();
+                    const j2 = JSON.parse(text2);
+                    if (j2?.code === '200' || j2?.code === '00000' || j2?.code === '0') settle = j2?.data || null;
+                } catch(_) {}
+                return {status: r1.status, code: j1?.code, msg: j1?.msg,
+                        overview, has_active: overview !== null, settle,
+                        raw_snippet: text1.slice(0, 200)};
             } catch(e) { return {status: 0, error: String(e)}; }
         }""", extra_headers)
     except Exception as e:
@@ -1005,8 +1016,9 @@ async def _fetch_elite_overview(page, push_fn: Callable):
         return
     if http == 200 and code in ("00000", "200", "0"):
         overview = result.get("overview")
+        settle  = result.get("settle") or {}
         if isinstance(overview, dict):
-            push_fn("elite_overview", {**overview, "active": True})
+            push_fn("elite_overview", {**overview, "active": True, "_settle": settle})
         else:
             push_fn("elite_overview", {"active": False})
 

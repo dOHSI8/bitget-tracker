@@ -658,12 +658,17 @@ def _push_data(kind: str, data, trader: str = None):
         row = data if isinstance(data, dict) else {}
         active = row.get("active", False)
         if active:
+            settle = row.get("_settle") or {}
+            total_profit     = _fv("profit", src=row)
+            total_share_profit = _fv("totalShareProfit", src=settle)
             _elite_overview["data"] = {
                 "active": True,
                 "balance": _fv("avlBalance", src=row),
                 "equity": _fv("totalEquity", "estimatedAssets", src=row),
                 "unrealized_pnl": _fv("unrealizedProfit", src=row),
-                "total_profit": _fv("profit", src=row),
+                "total_profit": total_profit,
+                "total_share_profit": total_share_profit,
+                "total_profit_combined": round(total_profit + total_share_profit, 4),
                 "copiers_profit": _fv("followProfit", src=row),
                 "roi": _fv("roi", src=row),
                 "aum": _fv("aum", src=row),
@@ -1336,6 +1341,8 @@ async def get_elite_overview():
         "equity": data.get("equity", 0.0),
         "unrealized_pnl": data.get("unrealized_pnl", 0.0),
         "total_profit": data.get("total_profit", 0.0),
+        "total_share_profit": data.get("total_share_profit", 0.0),
+        "total_profit_combined": data.get("total_profit_combined", 0.0),
         "copiers_profit": data.get("copiers_profit", 0.0),
         "roi": data.get("roi", 0.0),
         "aum": data.get("aum", 0.0),

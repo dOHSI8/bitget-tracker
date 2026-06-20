@@ -631,6 +631,10 @@
               <div class="trader-metric-val" id="eo-copiers-profit">—</div>
             </div>
             <div>
+              <div class="trader-metric-label">Shared Profit</div>
+              <div class="trader-metric-val" id="eo-share-profit">—</div>
+            </div>
+            <div>
               <div class="trader-metric-label">Unrealized PnL</div>
               <div class="trader-metric-val" id="eo-unrealized">—</div>
             </div>
@@ -1230,8 +1234,8 @@
       document.getElementById('eo-aum').textContent = fmtMoney(eo.aum);
 
       const tpEl = document.getElementById('eo-total-profit');
-      tpEl.textContent = fmtMoney(eo.total_profit);
-      tpEl.className = 'trader-alltime ' + colorVal(eo.total_profit);
+      tpEl.textContent = fmtMoney(eo.total_profit_combined);
+      tpEl.className = 'trader-alltime ' + colorVal(eo.total_profit_combined);
 
       const roiEl = document.getElementById('eo-roi');
       roiEl.textContent = parseFloat(eo.roi || 0).toFixed(2) + '%';
@@ -1240,6 +1244,10 @@
       const cpEl = document.getElementById('eo-copiers-profit');
       cpEl.textContent = fmtMoney(eo.copiers_profit);
       cpEl.className = 'trader-metric-val ' + colorVal(eo.copiers_profit);
+
+      const spEl = document.getElementById('eo-share-profit');
+      spEl.textContent = fmtMoney(eo.total_share_profit);
+      spEl.className = 'trader-metric-val ' + colorVal(eo.total_share_profit);
 
       const unEl = document.getElementById('eo-unrealized');
       unEl.textContent = fmtMoney(eo.unrealized_pnl);
