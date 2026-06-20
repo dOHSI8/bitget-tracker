@@ -693,7 +693,16 @@
     <details style="font-size:12px;color:var(--muted);margin-bottom:14px;cursor:pointer">
       <summary style="color:var(--green);font-weight:600;font-size:12px;letter-spacing:0.3px">How to get your cookie</summary>
       <div style="margin-top:12px">
-        <p style="font-size:10px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);margin-bottom:6px;font-weight:600">Desktop (Chrome / Firefox)</p>
+        <p style="font-size:10px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);margin-bottom:6px;font-weight:600">Desktop — Console (recommended, includes session tokens)</p>
+        <ol style="padding-left:18px;line-height:1.9;margin-bottom:14px">
+          <li>Open <strong>bitget.com</strong>, log in, navigate to your elite portfolio page</li>
+          <li>Press <strong>F12</strong> → Console tab</li>
+          <li>Paste and run:<br>
+            <code style="display:block;background:var(--card);padding:6px 8px;border-radius:6px;margin-top:6px;word-break:break-all;font-size:10px;user-select:all">copy(JSON.stringify({cookie:document.cookie,localStorage:{...localStorage}}))</code>
+          </li>
+          <li>Paste the copied JSON below</li>
+        </ol>
+        <p style="font-size:10px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);margin-bottom:6px;font-weight:600">Desktop — Network tab (cookie only)</p>
         <ol style="padding-left:18px;line-height:1.9;margin-bottom:14px">
           <li>Open <strong>bitget.com</strong> and log in</li>
           <li>Press <strong>F12</strong> → Network tab → refresh</li>
@@ -739,7 +748,7 @@
     </details>
     <div class="modal-field">
       <label>Cookie header value</label>
-      <textarea id="input-cookie" rows="4" placeholder="Paste cookie string here…"></textarea>
+      <textarea id="input-cookie" rows="4" placeholder="Paste cookie string or JSON from console command…"></textarea>
     </div>
     <div id="cookie-status" style="font-size:12px;margin-bottom:10px;display:none"></div>
     <div class="modal-actions">
@@ -1663,10 +1672,18 @@
     }
     cookieStatus.style.display = 'block';
     cookieStatus.innerHTML = '<span style="color:var(--muted)">Saving…</span>';
+    // Accept both plain cookie string and JSON {cookie, localStorage} from console command
+    let cookiePayload = { cookie: raw };
+    if (raw.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.cookie) cookiePayload = { cookie: parsed.cookie, localStorage: parsed.localStorage || {} };
+      } catch (_) { /* not JSON — treat as plain cookie string */ }
+    }
     const res = await fetch('/api/poller/cookie', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cookie: raw }),
+      body: JSON.stringify(cookiePayload),
     }).then(r => r.json());
     if (res.ok) {
       cookieStatus.innerHTML = '<span class="green">Saved. Poller will connect within ~15 seconds.</span>';

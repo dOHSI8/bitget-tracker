@@ -120,6 +120,44 @@ def _load_cookie_string() -> str:
     return os.environ.get("BITGET_COOKIE", "")
 
 
+def _load_local_storage() -> dict:
+    """Return localStorage dict saved alongside the cookie, or empty dict."""
+    if COOKIES_FILE.exists():
+        try:
+            return json.loads(COOKIES_FILE.read_text()).get("local_storage") or {}
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _elite_extra_headers() -> dict:
+    """Build extra auth headers from stored localStorage for elite-trader endpoints.
+
+    Bitget stores a separate session token in localStorage (not in document.cookie)
+    for the elite/lead-trader account context. Endpoints in the /portfolio/ and
+    /trace/mt5/elite* paths return 00004 without this token even when the follower
+    cookie is valid.
+
+    Tries all localStorage keys that look like tokens and maps them to the header
+    names Bitget's web app is known to use.
+    """
+    ls = _load_local_storage()
+    if not ls:
+        return {}
+    headers: dict = {}
+    # Collect values for any key that looks like an auth token
+    for key, val in ls.items():
+        if not isinstance(val, str) or not val:
+            continue
+        lk = key.lower()
+        if "token" in lk or "auth" in lk or "access" in lk:
+            # Try the most common header names Bitget uses
+            headers.setdefault("x-token", val)
+            headers.setdefault("access-token", val)
+            headers.setdefault("accesstoken", val)
+    return headers
+
+
 def _parse_cookie_string(cookie_str: str) -> list[dict]:
     cookies = []
     for pair in cookie_str.split("; "):
@@ -926,12 +964,14 @@ async def _fetch_elite_portfolio(page, push_fn: Callable):
     what the endpoint returns from Render's context (HTTP status, code, rows).
     Falls back to the full probe sweep if this endpoint returns no rows.
     """
+    extra_headers = _elite_extra_headers()
     try:
-        result = await page.evaluate("""async () => {
+        result = await page.evaluate("""async (extraHeaders) => {
             try {
+                const headers = {'Content-Type': 'application/json', ...extraHeaders};
                 const r = await fetch('/v1/trace/mt5/portfolio/getPortfolioHistory', {
                     method: 'POST', credentials: 'include',
-                    headers: {'Content-Type': 'application/json'},
+                    headers,
                     body: JSON.stringify({}),
                 });
                 const text = await r.text();
@@ -942,7 +982,7 @@ async def _fetch_elite_portfolio(page, push_fn: Callable):
                         rows: rows.length, row0: rows[0] || null,
                         raw_snippet: text.slice(0, 300)};
             } catch(e) { return {status: 0, error: String(e)}; }
-        }""")
+        }""", extra_headers)
     except Exception as e:
         _status["elite_portfolio"] = {"error": str(e)}
         logger.warning("_fetch_elite_portfolio error: %s", e)
