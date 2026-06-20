@@ -1161,6 +1161,7 @@
 
   let _earnTotal = 0;
   let _eliteTotal = 0;
+  let _eliteOverviewTotal = 0;
 
   async function fetchElite() {
     try {
@@ -1215,8 +1216,10 @@
     try {
       const eo = await fetch('/api/elite/overview').then(r => r.json());
       const sec = document.getElementById('elite-overview-section');
-      if (!eo.active) { sec.style.display = 'none'; return; }
+      if (!eo.active) { sec.style.display = 'none'; _eliteOverviewTotal = 0; renderBalance(); return; }
       sec.style.display = 'block';
+      _eliteOverviewTotal = parseFloat(eo.equity || 0);
+      renderBalance();
 
       const fmtMoney = v => '$' + parseFloat(v || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
       const colorVal = v => parseFloat(v || 0) >= 0 ? 'green' : 'red';
@@ -1372,7 +1375,7 @@
   function renderBalance() {
     const mt5 = _lastMt5;
     if (!mt5) return 0;
-    const displayBalance = (mt5.total_balance || 0) + _earnTotal + _eliteTotal + _liveOpenDelta;
+    const displayBalance = (mt5.total_balance || 0) + _earnTotal + _eliteTotal + _eliteOverviewTotal + _liveOpenDelta;
     document.getElementById('total-balance').textContent = fmtBal(displayBalance);
     document.getElementById('total-investment').textContent = fmtBal(mt5.total_investment);
 
