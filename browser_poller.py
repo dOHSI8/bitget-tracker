@@ -370,22 +370,15 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
 
     cutoff_ms = int((datetime.now(BKK) - timedelta(days=365)).timestamp() * 1000)
     all_rows: list = []
-    # Without startTime the API defaults to last 7 days only.
-    # Set it to 365 days ago to unlock the full history window.
-    range_start_ms = cutoff_ms
     end_time_ms: int | None = None
     API_PAGE_CAP = 50
     prev_oldest: int | None = None
 
     try:
         for batch in range(max_batches):
-            body: dict = {
-                "portfolioId": pid,
-                "pageSize": API_PAGE_CAP,
-                "startTime": range_start_ms,
-                "endTime": end_time_ms if end_time_ms is not None
-                           else int(datetime.now(BKK).timestamp() * 1000),
-            }
+            body: dict = {"portfolioId": pid, "pageSize": API_PAGE_CAP}
+            if end_time_ms is not None:
+                body["endTime"] = end_time_ms
 
             hist = await page.evaluate("""async ([pid, body]) => {
                 try {
