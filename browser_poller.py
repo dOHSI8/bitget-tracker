@@ -351,34 +351,48 @@ async def _active_poll(page, push_fn: Callable,
 
 async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str):
     """
-    Fetch closed position history.
+    Fetch closed position history using Bitget's fixed-window + pageNo pagination.
 
-    Server-side history.json is the source of truth — it merges and dedupes
-    every push. So most cycles only fetch page 1 (the latest 50 closed trades),
-    which is more than enough to catch newly-settled trades at a 30s interval.
+    API requires a fixed startTime/endTime window plus required sentinel fields
+    (pre, startId, lastEndId, languageType). Pagination advances via pageNo
+    increment plus a (lastPositionId, lastCloseTime) cursor from the last row
+    of each page — NOT a sliding endTime window.
 
-    A full backfill (all pages) runs only:
-      • the first time we poll this trader after process start / redeploy
-      • every _HISTORY_FULL_EVERY cycles thereafter (gap recovery)
-
-    The API caps each response at 50 rows regardless of pageSize.
-    We walk backwards using endTime = oldest close time of previous batch.
+    Most cycles fetch only page 1 (latest 50 trades). Full backfill (all pages)
+    runs on first poll after startup/redeploy and every _HISTORY_FULL_EVERY cycles.
     """
     polls = _status.get("polls", 0)
     need_full = (trader_name not in _history_full_done) or (polls % _HISTORY_FULL_EVERY == 0)
     max_batches = 200 if need_full else 1
 
-    cutoff_ms = int((datetime.now(BKK) - timedelta(days=365)).timestamp() * 1000)
-    all_rows: list = []
-    end_time_ms: int | None = None
+    # Fixed window matching Bitget's "Last 90 days" selector
+    now = datetime.now(BKK)
+    end_time_ms  = int(now.replace(hour=23, minute=59, second=59, microsecond=999000).timestamp() * 1000)
+    start_time_ms = int((now - timedelta(days=90)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
     API_PAGE_CAP = 50
-    prev_oldest: int | None = None
+    all_rows: list = []
+    page_no = 1
+    last_position_id: str | None = None
+    last_close_time:  int | None = None
 
     try:
         for batch in range(max_batches):
-            body: dict = {"portfolioId": pid, "pageSize": API_PAGE_CAP}
-            if end_time_ms is not None:
-                body["endTime"] = end_time_ms
+            body: dict = {
+                "portfolioId":  pid,
+                "pageSize":     API_PAGE_CAP,
+                "pageNo":       page_no,
+                "pre":          False,
+                "startId":      "" if batch == 0 else "0",
+                "lastEndId":    "" if batch == 0 else "0",
+                "startTime":    start_time_ms,
+                "endTime":      end_time_ms,
+                "languageType": 0,
+            }
+            if last_position_id is not None:
+                body["lastPositionId"] = last_position_id
+            if last_close_time is not None:
+                body["lastCloseTime"] = last_close_time
 
             hist = await page.evaluate("""async ([pid, body]) => {
                 try {
@@ -415,27 +429,35 @@ async def _poll_cfd_history(page, push_fn: Callable, trader_name: str, pid: str)
             _status["auth_ok"] = True
             if batch == 0:
                 _mark_scrape()
+
             rows = _extract_rows(hist.get("data") or {})
             if not rows:
                 break
 
             all_rows.extend(rows)
-            oldest = _oldest_close_ms(rows)
 
-            if oldest is not None and oldest == prev_oldest:
-                logger.info("CFD history[%s]: endTime ignored by API, stopping at batch %d",
-                            trader_name, batch + 1)
-                break
-            prev_oldest = oldest
+            # Extract cursor from last row for next page request
+            last_row = rows[-1] if isinstance(rows[-1], dict) else {}
+            for id_key in ("positionId", "tracePositionId", "followPositionId", "id"):
+                v = last_row.get(id_key)
+                if v is not None:
+                    last_position_id = str(v)
+                    break
+            for ct_key in ("closeTime", "closedAt", "closeTs", "ctime"):
+                v = last_row.get(ct_key)
+                if v is not None:
+                    try:
+                        t = int(v)
+                        last_close_time = t * 1000 if t < 10_000_000_000 else t
+                    except (TypeError, ValueError):
+                        pass
+                    break
 
-            if oldest and oldest < cutoff_ms:
+            page_no += 1
+
+            # Short page = last page of results in this window
+            if len(rows) < API_PAGE_CAP:
                 break
-            if not oldest:
-                break
-            # Note: do NOT break on len(rows) < API_PAGE_CAP.
-            # The API sometimes returns a short batch at a time-window boundary
-            # even when older trades exist — stopping early would miss history.
-            end_time_ms = oldest - 1
 
         if all_rows:
             mode = "full" if need_full else "page1"
