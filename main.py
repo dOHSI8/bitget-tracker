@@ -823,7 +823,8 @@ async def _refresh_investment() -> None:
     try:
         from bitget_api import fetch_net_investment
         result = await fetch_net_investment(
-            creds["api_key"], creds["secret"], creds["passphrase"]
+            creds["api_key"], creds["secret"], creds["passphrase"],
+            coins=["USDT", "USDC"],
         )
         _investment["data"] = result
         _investment["fetched_at"] = datetime.now(BKK).isoformat()

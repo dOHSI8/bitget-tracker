@@ -145,30 +145,55 @@ async def _get_windowed(client: httpx.AsyncClient, path: str, base_params: dict,
 
 
 async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
-                                coin: str = "USDT") -> dict:
+                                coins: list[str] | None = None) -> dict:
     """
-    Return net investment = total deposits - total withdrawals for coin.
+    Return net investment = total deposits - total withdrawals across all requested coins.
 
     Bitget enforces a 90-day max window per request, so we walk backwards
     in 85-day chunks covering 2 years.
 
     Primary deposit source: deposit-records (no coin filter — 400172 if coin= passed).
     Fallback: spot account bills (if deposit-records returns a non-range error).
+    Withdrawals are fetched per-coin in parallel.
     """
+    if coins is None:
+        coins = ["USDT"]
+    coins = [c.upper() for c in coins]
+    coin = coins[0]  # used for bills fallback and result label
+
     now_ms = int(time.time() * 1000)
     # 2 years back covers all realistic deposit history
     start_ms = now_ms - 2 * 365 * 24 * 3600 * 1000
 
     async with httpx.AsyncClient(timeout=60) as client:
-        # Run deposit-records and withdrawal-records concurrently
-        (deposits_all, dep_meta), (withdrawals, wdw_meta) = await asyncio.gather(
+        # Fetch deposits (no coin filter) + one withdrawal request per coin, all concurrently
+        wdw_tasks = [
+            _get_windowed(client, "/api/v2/spot/wallet/withdrawal-records",
+                          {"coin": c}, api_key, secret, passphrase, start_ms, now_ms)
+            for c in coins
+        ]
+        results = await asyncio.gather(
             _get_windowed(client, "/api/v2/spot/wallet/deposit-records",
                           {},  # no coin filter — 400172 if coin= passed
                           api_key, secret, passphrase, start_ms, now_ms),
-            _get_windowed(client, "/api/v2/spot/wallet/withdrawal-records",
-                          {"coin": coin},
-                          api_key, secret, passphrase, start_ms, now_ms),
+            *wdw_tasks,
         )
+        (deposits_all, dep_meta) = results[0]
+        wdw_results = results[1:]
+
+        # Combine withdrawals across all coins
+        withdrawals: list[dict] = []
+        wdw_meta = {"pages_fetched": 0, "windows_fetched": 0,
+                    "last_code": None, "last_msg": None, "error": None, "first_response": None}
+        for rows, meta in wdw_results:
+            withdrawals.extend(rows)
+            wdw_meta["pages_fetched"] += meta.get("pages_fetched", 0)
+            wdw_meta["windows_fetched"] += meta.get("windows_fetched", 0)
+            wdw_meta["last_code"] = meta.get("last_code") or wdw_meta["last_code"]
+            if meta.get("error"):
+                wdw_meta["error"] = meta["error"]
+            if wdw_meta["first_response"] is None:
+                wdw_meta["first_response"] = meta.get("first_response")
 
         bills_meta = None
         bills_rows: list[dict] = []
@@ -195,9 +220,9 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
         dep_sample = bills_rows[:3]
         dep_statuses: list = []
     else:
-        # Prefix match: catches USDT-TRC20, USDT-ERC20 etc.
+        # Prefix match: catches USDT-TRC20, USDT-ERC20, USDC-ERC20 etc.
         deposits_filtered = [r for r in deposits_all
-                              if str(r.get("coin", "")).upper().startswith(coin.upper())]
+                              if any(str(r.get("coin", "")).upper().startswith(c) for c in coins)]
         dep_success = [r for r in deposits_filtered if _is_success(r)]
         dep_total = sum(_row_amount(r) for r in dep_success)
         deposits_for_count = deposits_filtered
@@ -224,7 +249,8 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
         "withdrawal_count": len(withdrawals),
         "deposit_success_count": dep_success_count,
         "withdrawal_success_count": len(wdw_success),
-        "coin": coin,
+        "coins": coins,
+        "coin": "+".join(coins),
         "_dep_source": dep_source,
         "_dep_statuses": dep_statuses,
         "_wdw_statuses": wdw_statuses,
@@ -236,6 +262,7 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
         "_dep_sample": dep_sample,
         "_wdw_sample": withdrawals[:3],
     }
+
 
 
 def _parse_earn_apr(it: dict) -> float | None:
