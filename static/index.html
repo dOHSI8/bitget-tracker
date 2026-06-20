@@ -623,8 +623,8 @@
           </div>
           <div class="trader-metrics" style="margin-top:6px">
             <div>
-              <div class="trader-metric-label">Total Profit</div>
-              <div class="trader-metric-val" id="eo-total-profit">—</div>
+              <div class="trader-metric-label">ROI</div>
+              <div class="trader-metric-val" id="eo-roi">—</div>
             </div>
             <div>
               <div class="trader-metric-label">Copiers' Profit</div>
@@ -637,8 +637,8 @@
           </div>
         </div>
         <div class="trader-right">
-          <div class="trader-alltime-label">ROI</div>
-          <div class="trader-alltime" id="eo-roi">—</div>
+          <div class="trader-alltime-label">TOTAL PROFIT</div>
+          <div class="trader-alltime" id="eo-total-profit">—</div>
         </div>
       </div>
     </div>
@@ -1228,7 +1228,11 @@
 
       const tpEl = document.getElementById('eo-total-profit');
       tpEl.textContent = fmtMoney(eo.total_profit);
-      tpEl.className = 'trader-metric-val ' + colorVal(eo.total_profit);
+      tpEl.className = 'trader-alltime ' + colorVal(eo.total_profit);
+
+      const roiEl = document.getElementById('eo-roi');
+      roiEl.textContent = parseFloat(eo.roi || 0).toFixed(2) + '%';
+      roiEl.className = 'trader-metric-val ' + colorVal(eo.roi);
 
       const cpEl = document.getElementById('eo-copiers-profit');
       cpEl.textContent = fmtMoney(eo.copiers_profit);
@@ -1237,10 +1241,6 @@
       const unEl = document.getElementById('eo-unrealized');
       unEl.textContent = fmtMoney(eo.unrealized_pnl);
       unEl.className = 'trader-metric-val ' + colorVal(eo.unrealized_pnl);
-
-      const roiEl = document.getElementById('eo-roi');
-      roiEl.textContent = parseFloat(eo.roi || 0).toFixed(2) + '%';
-      roiEl.className = 'trader-alltime ' + colorVal(eo.roi);
     } catch(e) { console.error('fetchEliteOverview', e); }
   }
 
