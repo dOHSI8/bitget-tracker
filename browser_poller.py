@@ -858,6 +858,8 @@ async def _fetch_cancelled_copies(page, push_fn: Callable):
 
 # (method, endpoint) — tries both POST and GET for promising paths
 _ELITE_PROBES: list[tuple[str, str]] = [
+    # ── Confirmed working endpoint (returns rows[0].totalProfit) ─────────────
+    ("POST", "/v1/trace/mt5/portfolio/getPortfolioHistory"),
     # ── Same trace/mt5 base, broader name variations ────────────────────────
     ("POST", "/v1/trace/mt5/trace/getTraderPortfolios"),
     ("POST", "/v1/trace/mt5/trace/getTraderPortfolio"),
