@@ -541,7 +541,7 @@ async def _fetch_balance(page, push_fn: Callable,
     for trader_name, pid in fut_traders.items():
         await _fetch_futures_balance(page, push_fn, trader_name, pid)
 
-    await _fetch_elite_trader(page, push_fn)
+    await _fetch_elite_portfolio(page, push_fn)
 
 
 async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
@@ -917,6 +917,58 @@ _elite_ep:     str | None = None
 _elite_method: str        = "POST"
 _ELITE_REPROBE_EVERY = 30   # full sweep is ~40 requests; only run it occasionally
 _elite_probe_count = 0
+
+
+async def _fetch_elite_portfolio(page, push_fn: Callable):
+    """Call getPortfolioHistory every cycle and log the full response for debugging.
+
+    Stores result in _status['elite_portfolio'] so /api/poller shows exactly
+    what the endpoint returns from Render's context (HTTP status, code, rows).
+    Falls back to the full probe sweep if this endpoint returns no rows.
+    """
+    try:
+        result = await page.evaluate("""async () => {
+            try {
+                const r = await fetch('/v1/trace/mt5/portfolio/getPortfolioHistory', {
+                    method: 'POST', credentials: 'include',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({}),
+                });
+                const text = await r.text();
+                if (text.trimStart().startsWith('<')) return {status: r.status, error: 'html_redirect'};
+                const j = JSON.parse(text);
+                const rows = j?.data?.rows || [];
+                return {status: r.status, code: j?.code, msg: j?.msg,
+                        rows: rows.length, row0: rows[0] || null,
+                        raw_snippet: text.slice(0, 300)};
+            } catch(e) { return {status: 0, error: String(e)}; }
+        }""")
+    except Exception as e:
+        _status["elite_portfolio"] = {"error": str(e)}
+        logger.warning("_fetch_elite_portfolio error: %s", e)
+        return
+
+    http  = result.get("status") if isinstance(result, dict) else 0
+    code  = result.get("code")   if isinstance(result, dict) else None
+    row0  = result.get("row0")   if isinstance(result, dict) else None
+    _status["elite_portfolio"] = {
+        "http": http, "code": code, "msg": result.get("msg"),
+        "rows": result.get("rows"), "error": result.get("error"),
+        "raw_snippet": result.get("raw_snippet"),
+    }
+    logger.info("Elite portfolio: http=%s code=%s rows=%s err=%s",
+                http, code, result.get("rows"), result.get("error"))
+
+    if result.get("error") == "html_redirect":
+        _status["auth_ok"] = False
+        return
+    if http == 200 and code in ("00000", "200", "0") and isinstance(row0, dict):
+        push_fn("elite_trader", row0)
+        logger.info("Elite portfolio pushed: totalProfit=%s", row0.get("totalProfit"))
+        return
+
+    # Endpoint didn't return usable data from this context — fall back to probe sweep
+    await _fetch_elite_trader(page, push_fn)
 
 
 async def _fetch_elite_trader(page, push_fn: Callable):
