@@ -215,6 +215,12 @@ _elite_overview: dict = {
     "error": None,
 }
 
+_futures_leader: dict = {
+    "data": None,        # result from fetch_futures_leader_portfolio
+    "fetched_at": None,
+    "error": None,
+}
+
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
 
@@ -911,6 +917,34 @@ async def _earn_poller():
         await asyncio.sleep(30 * 60)
 
 
+async def _refresh_futures_leader() -> None:
+    global _futures_leader
+    creds = _load_credentials()
+    if not creds:
+        return
+    try:
+        from bitget_api import fetch_futures_leader_portfolio
+        result = await fetch_futures_leader_portfolio(
+            creds["api_key"], creds["secret"], creds["passphrase"]
+        )
+        _futures_leader["data"] = result if result.get("ok") else None
+        _futures_leader["fetched_at"] = datetime.now(BKK).isoformat()
+        _futures_leader["error"] = result.get("error") if not result.get("ok") else None
+        logger.info("Futures leader refreshed: ok=%s balance=%s equity=%s",
+                    result.get("ok"), result.get("balance"), result.get("equity"))
+    except Exception as e:
+        _futures_leader["error"] = str(e)
+        logger.error("Futures leader refresh failed: %s", e)
+
+
+async def _futures_leader_poller():
+    """Refresh futures leader portfolio on startup then every 5 minutes."""
+    await asyncio.sleep(15)
+    while True:
+        await _refresh_futures_leader()
+        await asyncio.sleep(5 * 60)
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -928,10 +962,12 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(start_poller(_push_data))
     inv_task = asyncio.create_task(_investment_poller())
     earn_task = asyncio.create_task(_earn_poller())
+    fl_task = asyncio.create_task(_futures_leader_poller())
     yield
     task.cancel()
     inv_task.cancel()
     earn_task.cancel()
+    fl_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -1312,6 +1348,31 @@ async def refresh_earn():
     return {"ok": True, "message": "Refresh started"}
 
 
+@app.get("/api/futures-leader")
+async def get_futures_leader():
+    data = _futures_leader["data"] or {}
+    return {
+        "available": _futures_leader["data"] is not None,
+        "balance": data.get("balance", 0.0),
+        "equity": data.get("equity", 0.0),
+        "total_profit": data.get("total_profit", 0.0),
+        "aum": data.get("aum", 0.0),
+        "copiers": data.get("copiers", 0),
+        "roi": data.get("roi", 0.0),
+        "product_type": data.get("product_type"),
+        "fetched_at": _futures_leader["fetched_at"],
+        "error": _futures_leader["error"],
+    }
+
+
+@app.post("/api/futures-leader/refresh")
+async def refresh_futures_leader():
+    if not _load_credentials():
+        return {"ok": False, "error": "No API credentials configured"}
+    asyncio.create_task(_refresh_futures_leader())
+    return {"ok": True, "message": "Refresh started"}
+
+
 @app.get("/api/elite")
 async def get_elite():
     data = _elite["data"] or {}
@@ -1373,6 +1434,7 @@ async def save_credentials(request: Request):
     logger.info("API credentials saved")
     asyncio.create_task(_refresh_investment())
     asyncio.create_task(_refresh_earn())
+    asyncio.create_task(_refresh_futures_leader())
     return {"ok": True}
 
 

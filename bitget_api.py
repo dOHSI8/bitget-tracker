@@ -264,6 +264,49 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
     }
 
 
+async def fetch_futures_leader_portfolio(api_key: str, secret: str, passphrase: str) -> dict:
+    """Fetch the user's own futures copy-trading leader portfolio via the official API.
+
+    Uses GET /api/v2/copy/mix-leader/profit-summary which returns balance, equity,
+    total profit, AUM, follower count and ROI without needing the browser session.
+    """
+    path = "/api/v2/copy/mix-leader/profit-summary"
+    qs = "?productType=umcbl"   # USDT-margined futures (umcbl); try dmcbl as fallback
+    async with httpx.AsyncClient(timeout=10) as client:
+        for product_type in ("umcbl", "dmcbl", "cmcbl"):
+            qs = f"?productType={product_type}"
+            hdrs = _auth_headers("GET", path + qs, "", api_key, secret, passphrase)
+            try:
+                r = await client.get(BITGET_API_BASE + path + qs, headers=hdrs)
+                body = r.json()
+            except Exception as exc:
+                logger.warning("fetch_futures_leader_portfolio %s: %s", product_type, exc)
+                continue
+            code = str(body.get("code", ""))
+            data = body.get("data") or {}
+            logger.info("futures_leader %s: code=%s keys=%s", product_type, code, list(data.keys())[:10] if isinstance(data, dict) else "?")
+            if code in ("00000", "0", "200") and isinstance(data, dict) and data:
+                return {
+                    "ok": True,
+                    "product_type": product_type,
+                    "balance": _safe_float(data.get("balance") or data.get("avlBalance") or data.get("availableBalance")),
+                    "equity": _safe_float(data.get("equity") or data.get("totalEquity") or data.get("usdtEquity")),
+                    "total_profit": _safe_float(data.get("totalProfit") or data.get("profit") or data.get("cumulativeProfit")),
+                    "aum": _safe_float(data.get("aum") or data.get("totalAum")),
+                    "copiers": int(float(data.get("followerNum") or data.get("followerCount") or data.get("copiers") or 0)),
+                    "roi": _safe_float(data.get("roi") or data.get("profitRate")),
+                    "raw": data,
+                    "_code": code,
+                }
+        return {"ok": False, "error": "no data from any product type"}
+
+
+def _safe_float(v) -> float:
+    try:
+        return round(float(v), 4) if v not in (None, "", "null") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
 
 def _parse_earn_apr(it: dict) -> float | None:
     """Extract APR % from an earn position dict, normalising decimal vs percent."""
