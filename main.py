@@ -999,11 +999,8 @@ async def get_mt5():
 
 @app.get("/api/mt5/traders")
 async def get_mt5_traders():
-    cancelled_names = set(_settings.get("cancelled_trader_names") or [])
     summaries = []
     for name in _trader_names():
-        if name in cancelled_names:
-            continue
         tc = _tc(name)
         if tc["summary"] is None:
             _rebuild_trader_summary(name)
