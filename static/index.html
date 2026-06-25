@@ -1863,19 +1863,53 @@
     }
     el.innerHTML = traders.map(t => {
       const badge = `<span class="type-badge ${t.type === 'futures' ? 'futures' : 'cfd'}">${t.type === 'futures' ? 'FUTURES' : 'CFD'}</span>`;
-      return `<div class="modal-trader-row">
-        <div>
-          <div style="display:flex;align-items:center;gap:6px">
-            <span class="modal-trader-name">${esc(t.name)}</span>${badge}
+      const key = t.name.replace(/[^a-zA-Z0-9]/g, '_');
+      return `<div class="modal-trader-row" style="flex-direction:column;align-items:stretch;gap:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span class="modal-trader-name">${esc(t.name)}</span>${badge}
+            </div>
+            <div class="modal-trader-id">${esc(t.id)}</div>
           </div>
-          <div class="modal-trader-id">${esc(t.id)}</div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button class="btn-reset-data" onclick="toggleTraderEdit('${key}')" title="Edit portfolio ID">Edit</button>
+            <button class="btn-reset-data" onclick="resetTraderData('${t.name}')" title="Clear cached data">Reset</button>
+            <button class="btn-remove" onclick="removeTrader('${t.name}')">Remove</button>
+          </div>
         </div>
-        <div style="display:flex;gap:6px;flex-shrink:0">
-          <button class="btn-reset-data" onclick="resetTraderData('${t.name}')" title="Clear cached balance/investment data">Reset data</button>
-          <button class="btn-remove" onclick="removeTrader('${t.name}')">Remove</button>
+        <div id="trader-edit-${key}" style="display:none;background:var(--card);border-radius:8px;padding:10px;display:none">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Portfolio ID</div>
+          <input id="trader-edit-id-${key}" type="text" inputmode="numeric"
+            style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border-hi);border-radius:6px;padding:8px 10px;color:var(--text);font-size:13px;font-family:var(--mono)"
+            value="${esc(t.id)}" placeholder="Portfolio ID" />
+          <button onclick="saveTraderEdit('${t.name}','${key}')"
+            style="margin-top:8px;width:100%;background:var(--green);color:#000;border:none;border-radius:6px;padding:8px;font-weight:600;cursor:pointer;font-size:13px">Save</button>
         </div>
       </div>`;
     }).join('');
+  }
+
+  function toggleTraderEdit(key) {
+    const el = document.getElementById('trader-edit-' + key);
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+
+  async function saveTraderEdit(name, key) {
+    const newId = document.getElementById('trader-edit-id-' + key).value.trim();
+    if (!newId) return;
+    const res = await fetch(`/api/traders/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: newId }),
+    }).then(r => r.json());
+    if (res.ok) {
+      await refreshTradersModalList();
+      fetchTraders();
+      fetchData();
+    } else {
+      alert('Error: ' + (res.error || 'unknown'));
+    }
   }
 
   async function resetTraderData(name) {

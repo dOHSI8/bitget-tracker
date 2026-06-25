@@ -1287,6 +1287,27 @@ async def remove_trader(name: str):
     return {"ok": True, "traders": _traders_list}
 
 
+@app.patch("/api/traders/{name}")
+async def update_trader(name: str, request: Request):
+    global _traders_list
+    body = await request.json()
+    new_id   = body.get("id", "").strip()
+    new_name = body.get("name", "").strip()
+    new_type = body.get("type", "").strip()
+    trader = next((t for t in _traders_list if t["name"] == name), None)
+    if not trader:
+        return {"ok": False, "error": f"Trader '{name}' not found"}
+    if new_id:
+        trader["id"] = new_id
+    if new_name and new_name != name:
+        trader["name"] = new_name
+    if new_type in ("cfd", "futures"):
+        trader["type"] = new_type
+    _save_traders_list(_traders_list)
+    logger.info("Trader updated: %s → id=%s type=%s", name, trader["id"], trader["type"])
+    return {"ok": True, "trader": trader}
+
+
 @app.post("/api/traders/{name}/reset")
 async def reset_trader_data(name: str):
     """Clear cached settings and in-memory data for a trader without removing it."""
