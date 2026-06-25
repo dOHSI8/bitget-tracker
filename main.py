@@ -801,12 +801,7 @@ def _rebuild_summary() -> None:
     total_open_pnl = 0.0
     total_open_count = 0
 
-    # Traders that have been stopped — their PnL already counted in cancelled_copy_pnl
-    cancelled_names = set(_settings.get("cancelled_trader_names") or [])
-
     for name in _trader_names():
-        if name in cancelled_names:
-            continue  # PnL counted in cancelled_copy_pnl; skip to avoid double-count
         s = _rebuild_trader_summary(name)
         all_trades.extend(_tc(name)["trades"] or [])
         total_balance += s["balance"]
