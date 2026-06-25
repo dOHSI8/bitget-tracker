@@ -1021,54 +1021,58 @@ async def get_mt5_positions_raw():
 
 
 # --- Live public-market prices (no auth — works even when the cookie is dead) ---
-# MT5 CFD symbol -> Bitget spot symbol
+# MT5 CFD symbol -> Bitget perp symbol (fallback only for gold/silver)
 _PRICE_SYMBOL_MAP = {
     "XAUUSD": "XAUUSDT",
     "XAGUSD": "XAGUSDT",
     "BTCUSD": "BTCUSDT",
     "ETHUSD": "ETHUSDT",
 }
-# Symbols that should use spot price rather than perpetual futures.
-# Gold/silver spot tracks actual metal price; perp has funding-rate drift.
-_SPOT_PREFERRED = {"XAUUSDT", "XAGUSDT"}
+# Yahoo Finance tickers for symbols where the forex/interbank rate is needed.
+# These are the actual OTC spot rates that MT5 CFD brokers reference.
+_YAHOO_SYMBOL_MAP = {
+    "XAUUSD": "XAUUSD=X",
+    "XAGUSD": "XAGUSD=X",
+}
 
 _price_cache: dict[str, dict] = {}  # CFD symbol -> {"price": float, "ts": float}
 _PRICE_TTL = 3.0
 
 
-async def _fetch_public_price(client: httpx.AsyncClient, bg_symbol: str) -> float | None:
-    # For gold/silver prefer spot (no funding rate); for crypto prefer perp (more liquid)
-    spot_first = bg_symbol in _SPOT_PREFERRED
-    async def _spot():
+async def _fetch_public_price(client: httpx.AsyncClient, cfd_symbol: str) -> float | None:
+    bg_symbol = _PRICE_SYMBOL_MAP.get(cfd_symbol, cfd_symbol)
+
+    # Gold/silver: use Yahoo Finance forex spot rate (matches MT5 interbank pricing).
+    # Fall back to Bitget perp only if Yahoo is unavailable.
+    yahoo_ticker = _YAHOO_SYMBOL_MAP.get(cfd_symbol)
+    if yahoo_ticker:
         try:
-            r = await client.get("https://api.bitget.com/api/v2/spot/market/tickers",
-                                 params={"symbol": bg_symbol})
-            d = r.json().get("data")
-            if isinstance(d, list) and d:
-                v = d[0].get("lastPr") or d[0].get("close")
-                if v:
-                    return float(v)
+            r = await client.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_ticker}",
+                params={"interval": "1m", "range": "1d"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=5,
+            )
+            price = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
+            if price and float(price) > 0:
+                return float(price)
         except Exception:
             pass
-        return None
 
-    async def _perp():
-        try:
-            r = await client.get("https://api.bitget.com/api/v2/mix/market/ticker",
-                                 params={"symbol": bg_symbol, "productType": "USDT-FUTURES"})
-            d = r.json().get("data")
-            if isinstance(d, list) and d:
-                d = d[0]
-            if isinstance(d, dict):
-                v = d.get("lastPr") or d.get("last") or d.get("close")
-                if v:
-                    return float(v)
-        except Exception:
-            pass
-        return None
-
-    first, second = (_spot, _perp) if spot_first else (_perp, _spot)
-    return await first() or await second()
+    # Crypto symbols (BTC/ETH) and fallback for gold: Bitget perp (most liquid)
+    try:
+        r = await client.get("https://api.bitget.com/api/v2/mix/market/ticker",
+                             params={"symbol": bg_symbol, "productType": "USDT-FUTURES"})
+        d = r.json().get("data")
+        if isinstance(d, list) and d:
+            d = d[0]
+        if isinstance(d, dict):
+            v = d.get("lastPr") or d.get("last") or d.get("close")
+            if v:
+                return float(v)
+    except Exception:
+        pass
+    return None
 
 
 @app.get("/api/prices")
@@ -1086,14 +1090,13 @@ async def get_prices():
     out = {}
     async with httpx.AsyncClient(timeout=8) as client:
         for sym in symbols:
-            bg = _PRICE_SYMBOL_MAP.get(sym)
-            if not bg:
+            if sym not in _PRICE_SYMBOL_MAP:
                 continue
             cached = _price_cache.get(sym)
             if cached and now - cached["ts"] < _PRICE_TTL:
                 out[sym] = cached["price"]
                 continue
-            price = await _fetch_public_price(client, bg)
+            price = await _fetch_public_price(client, sym)
             if price:
                 _price_cache[sym] = {"price": price, "ts": now}
                 out[sym] = price
