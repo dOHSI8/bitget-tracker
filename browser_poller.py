@@ -612,17 +612,24 @@ async def _fetch_cfd_balances(page, push_fn: Callable, cfd_traders: dict):
         elif result.get("status") == 200 and code in ("00000", "200", "0"):
             _status["auth_ok"] = True
             details = (result.get("data") or {}).get("portfolioDetails") or []
+            returned_pids = []
             matched = 0
             for portfolio in details:
                 if not isinstance(portfolio, dict):
                     continue
                 pid = str(portfolio.get("portfolioId") or portfolio.get("followPortfolioId") or "")
+                returned_pids.append(pid)
                 trader_name = pid_to_name.get(pid)
                 if trader_name:
                     logger.info("CFD getFollowPortfolios all: matched %s balance=%s",
                                 trader_name, portfolio.get("balance"))
                     push_fn("copy_details", portfolio, trader_name)
                     matched += 1
+            _status["last_balance_probes"]["getFollowPortfolios_all"]["returned_pids"] = returned_pids
+            _status["last_balance_probes"]["getFollowPortfolios_all"]["configured_pids"] = list(pid_set)
+            _status["last_balance_probes"]["getFollowPortfolios_all"]["matched"] = matched
+            logger.info("CFD getFollowPortfolios all: %d portfolios returned, %d matched. returned=%s configured=%s",
+                        len(returned_pids), matched, returned_pids, list(pid_set))
             if matched > 0:
                 _mark_scrape()
                 return
