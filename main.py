@@ -1029,42 +1029,54 @@ async def get_mt5_positions_raw():
 
 
 # --- Live public-market prices (no auth — works even when the cookie is dead) ---
-# MT5 CFD symbol -> Bitget public perp symbol
+# MT5 CFD symbol -> Bitget spot symbol
 _PRICE_SYMBOL_MAP = {
     "XAUUSD": "XAUUSDT",
     "XAGUSD": "XAGUSDT",
     "BTCUSD": "BTCUSDT",
     "ETHUSD": "ETHUSDT",
 }
+# Symbols that should use spot price rather than perpetual futures.
+# Gold/silver spot tracks actual metal price; perp has funding-rate drift.
+_SPOT_PREFERRED = {"XAUUSDT", "XAGUSDT"}
+
 _price_cache: dict[str, dict] = {}  # CFD symbol -> {"price": float, "ts": float}
 _PRICE_TTL = 3.0
 
 
 async def _fetch_public_price(client: httpx.AsyncClient, bg_symbol: str) -> float | None:
-    # Gold/silver trade as USDT perps on Bitget; spot is the fallback
-    try:
-        r = await client.get("https://api.bitget.com/api/v2/mix/market/ticker",
-                             params={"symbol": bg_symbol, "productType": "USDT-FUTURES"})
-        d = r.json().get("data")
-        if isinstance(d, list) and d:
-            d = d[0]
-        if isinstance(d, dict):
-            v = d.get("lastPr") or d.get("last") or d.get("close")
-            if v:
-                return float(v)
-    except Exception:
-        pass
-    try:
-        r = await client.get("https://api.bitget.com/api/v2/spot/market/tickers",
-                             params={"symbol": bg_symbol})
-        d = r.json().get("data")
-        if isinstance(d, list) and d:
-            v = d[0].get("lastPr") or d[0].get("close")
-            if v:
-                return float(v)
-    except Exception:
-        pass
-    return None
+    # For gold/silver prefer spot (no funding rate); for crypto prefer perp (more liquid)
+    spot_first = bg_symbol in _SPOT_PREFERRED
+    async def _spot():
+        try:
+            r = await client.get("https://api.bitget.com/api/v2/spot/market/tickers",
+                                 params={"symbol": bg_symbol})
+            d = r.json().get("data")
+            if isinstance(d, list) and d:
+                v = d[0].get("lastPr") or d[0].get("close")
+                if v:
+                    return float(v)
+        except Exception:
+            pass
+        return None
+
+    async def _perp():
+        try:
+            r = await client.get("https://api.bitget.com/api/v2/mix/market/ticker",
+                                 params={"symbol": bg_symbol, "productType": "USDT-FUTURES"})
+            d = r.json().get("data")
+            if isinstance(d, list) and d:
+                d = d[0]
+            if isinstance(d, dict):
+                v = d.get("lastPr") or d.get("last") or d.get("close")
+                if v:
+                    return float(v)
+        except Exception:
+            pass
+        return None
+
+    first, second = (_spot, _perp) if spot_first else (_perp, _spot)
+    return await first() or await second()
 
 
 @app.get("/api/prices")
