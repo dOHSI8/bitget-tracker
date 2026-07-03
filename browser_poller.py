@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable
@@ -210,8 +211,12 @@ async def start_poller(push_fn: Callable):
             _status["last_error"] = f"Poll error: {e}"
 
         _status["browser_alive"] = False
-        logger.info("Next poll in %ds… (pushes so far: %d)", POLL_INTERVAL, _status["pushes"])
-        await asyncio.sleep(POLL_INTERVAL)
+        # Add ±40% random jitter so the cadence doesn't look robotic to Bitget's
+        # bot detection (DataDome). Keeps the average near POLL_INTERVAL.
+        jitter = random.uniform(-0.4, 0.4) * POLL_INTERVAL
+        sleep_for = max(5.0, POLL_INTERVAL + jitter)
+        logger.info("Next poll in %.0fs… (pushes so far: %d)", sleep_for, _status["pushes"])
+        await asyncio.sleep(sleep_for)
 
 
 async def _poll_once(push_fn: Callable, cookie_str: str,

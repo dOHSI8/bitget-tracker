@@ -6,9 +6,10 @@ name: Refresh Bitget cookie
 
 on:
   schedule:
-    # Twice a day (00:00 and 12:00 UTC). Cookie lives ~5 days, so this keeps
-    # it comfortably renewed. Cron times are UTC and may drift a few minutes.
-    - cron: '0 0,12 * * *'
+    # Every 3 hours. Bitget's anti-fraud can revoke the session well before its
+    # nominal expiry, so renew often to catch and extend it while still alive.
+    # Cron times are UTC and may drift a few minutes.
+    - cron: '0 */3 * * *'
   workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
 
 concurrency:
