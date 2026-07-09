@@ -6,10 +6,12 @@ name: Refresh Bitget cookie
 
 on:
   schedule:
-    # Every 3 hours. Bitget's anti-fraud can revoke the session well before its
-    # nominal expiry, so renew often to catch and extend it while still alive.
-    # Cron times are UTC and may drift a few minutes.
-    - cron: '0 */3 * * *'
+    # Hourly, at :17 — an off-peak minute. GitHub silently skips or delays
+    # scheduled runs during load spikes (worst at :00), and a skipped run
+    # previously left a 6h gap in which the session died. With an hourly
+    # cadence a dropped run costs 1 hour, not 3-6. This is now a BACKUP:
+    # the tracker self-refreshes its cookie on every poll cycle.
+    - cron: '17 * * * *'
   workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
 
 concurrency:

@@ -274,9 +274,47 @@ async def _poll_once(push_fn: Callable, cookie_str: str,
             await _active_poll(page, push_fn, traders, trader_types)
             await _fetch_balance(page, push_fn, traders, trader_types)
 
+            # Persist the refreshed cookie jar. Bitget rotates/extends session
+            # cookies on active use; saving them after each authenticated cycle
+            # keeps the session alive from this server's own IP instead of
+            # relying on the external GitHub Actions refresher.
+            if _status.get("auth_ok"):
+                try:
+                    await _persist_refreshed_cookies(context)
+                except Exception as e:
+                    logger.warning("Cookie self-refresh persist failed: %s", e)
+
             logger.info("Poll cycle complete — closing browser")
         finally:
             await browser.close()
+
+
+async def _persist_refreshed_cookies(context) -> None:
+    """Write the browser's current bitget.com cookies back to cookies.json.
+
+    Only runs after an auth-OK cycle so a dead/anonymous jar can never
+    overwrite a working cookie. Preserves local_storage and the user's
+    'updated' timestamp; records self_refreshed_at separately.
+    """
+    jar = await context.cookies("https://www.bitget.com")
+    parts = [f"{c['name']}={c['value']}" for c in jar
+             if "bitget.com" in c.get("domain", "")]
+    new_str = "; ".join(parts)
+    if not new_str or "bt_newsessionid" not in new_str:
+        return  # incomplete jar — keep what we have
+
+    payload: dict = {}
+    if COOKIES_FILE.exists():
+        try:
+            payload = json.loads(COOKIES_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            payload = {}
+    if payload.get("cookie") == new_str:
+        return  # nothing changed
+    payload["cookie"] = new_str
+    payload["self_refreshed_at"] = datetime.now(BKK).isoformat()
+    COOKIES_FILE.write_text(json.dumps(payload))
+    logger.info("Self-refreshed cookie persisted (%d chars)", len(new_str))
 
 
 # ── Positions probe (runs early, right after /about warmup) ──────────────────
