@@ -439,6 +439,47 @@
       .goal-ring-wrap svg { width: 140px; height: 140px; }
       .goal-remaining-text { font-size: 12px; }
     }
+    /* ── Performance / journal-derived sections ─────────────── */
+    .perf-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .perf-streak { font-size: 10.5px; color: var(--muted); margin-top: 8px; letter-spacing: 0.3px; }
+    .section-head-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+    .section-head-row .section-label { margin-bottom: 0; }
+    .journal-cta { font-size: 10.5px; color: var(--muted); text-decoration: none; letter-spacing: 0.4px; }
+    .journal-cta:active, .journal-cta:hover { color: var(--green); }
+
+    .cal-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+    .cal-flex { display: flex; }
+    .cal-side { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; font-size: 8.5px;
+      color: var(--muted); margin-right: 6px; align-items: center; }
+    .cal-months { display: flex; font-size: 9.5px; color: var(--muted); margin-bottom: 4px; }
+    .cal-grid { display: inline-grid; grid-auto-flow: column; gap: 3px; }
+    .cal-col { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; }
+    .cal-cell { width: 12px; height: 12px; border-radius: 3px; background: var(--border); }
+    .cal-cell.has { cursor: pointer; }
+    .cal-cell.sel { outline: 2px solid var(--amber); outline-offset: 1px; }
+    .cal-legend { display: flex; align-items: center; gap: 4px; font-size: 9.5px;
+      color: var(--muted); margin-top: 8px; }
+    .cal-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+    #cal-day-detail { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; display: none; }
+    #cal-day-detail .cdd-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+    #cal-day-detail .cdd-row { display: flex; justify-content: space-between; font-size: 11px;
+      padding: 3px 0; color: var(--muted); }
+    #cal-day-detail .cdd-row .mono { font-family: var(--mono); }
+
+    .insight-row { display: flex; gap: 9px; padding: 8px 10px; background: var(--surface);
+      border: 1px solid var(--border-hi); border-radius: 9px; font-size: 11.5px;
+      line-height: 1.45; margin-bottom: 6px; }
+    .insight-row .ins-ico { flex: none; }
+    .insight-row b { font-weight: 600; }
+
+    .eye-toggle { background: none; border: 1px solid var(--border-hi); border-radius: 7px;
+      color: var(--muted); font-size: 11px; padding: 3px 8px; cursor: pointer; }
+    body.hide-pnl .eye-toggle { color: var(--amber); border-color: var(--amber); }
+    body.hide-pnl :is(#total-balance,#total-investment,#daily-pnl,#open-pnl,#all-time-pnl,
+      #inv-deposits,#inv-withdrawals,#inv-net,#goal-remaining,#goal-ring-pct,#daily-sub,
+      #eo-balance,#eo-equity,#eo-pnl,.stat-val,.trader-metric-val,#trades-body,
+      #positions-body,#chart-canvas,#cal-day-detail,#perf-insights) {
+      filter: blur(7px); }
   </style>
 </head>
 <body>
@@ -450,6 +491,7 @@
   <header>
     <div class="logo">BITGET <span>· All Traders</span></div>
     <div class="header-right">
+      <button class="eye-toggle" id="eye-toggle" onclick="togglePnlPrivacy()" aria-pressed="false" title="Hide P&amp;L amounts">👁</button>
       <a href="/journal.html" style="font-size:11px;letter-spacing:0.5px;color:var(--muted);text-decoration:none;border:1px solid var(--border,#333);border-radius:8px;padding:4px 10px" title="Trading journal &amp; analytics">Journal</a>
       <div id="theme-toggle" role="group" aria-label="Theme">
         <button class="theme-seg" id="theme-seg-light" onclick="setTheme('light')">Light</button>
@@ -571,6 +613,32 @@
       <div class="section-label" style="margin-bottom:8px">Cumulative P&amp;L</div>
       <canvas id="chart-canvas"></canvas>
       <div id="chart-tooltip"><div class="ct-date"></div><div class="ct-val"></div><div class="ct-daily"></div></div>
+    </div>
+
+    <!-- Performance KPIs (from full trade history) -->
+    <div class="section" id="perf-section" style="display:none">
+      <div class="section-head-row">
+        <div class="section-label">Performance · 90d</div>
+        <a class="journal-cta" href="/journal.html">Full journal →</a>
+      </div>
+      <div class="perf-cards" id="perf-cards"></div>
+      <div class="perf-streak" id="perf-streak"></div>
+    </div>
+
+    <!-- Daily P&L calendar -->
+    <div class="section" id="cal-section" style="display:none">
+      <div class="section-head-row">
+        <div class="section-label">Daily P&amp;L Calendar</div>
+        <span class="journal-cta" id="cal-days-count"></span>
+      </div>
+      <div id="cal-body"></div>
+      <div id="cal-day-detail"></div>
+    </div>
+
+    <!-- Insights -->
+    <div class="section" id="insights-section" style="display:none">
+      <div class="section-label" style="margin-bottom:10px">Insights</div>
+      <div id="perf-insights"></div>
     </div>
 
     <!-- Positions + History tabs -->
@@ -880,6 +948,9 @@
   function setTheme(theme) {
     localStorage.setItem(THEME_KEY, theme);
     applyTheme(theme);
+    // Calendar/insight colors are sampled from CSS vars at render time —
+    // re-render so they pick up the new theme immediately.
+    try { if (_journalTrades) renderPerfSections(); } catch (e) {}
   }
   (function () {
     const saved = localStorage.getItem(THEME_KEY);
@@ -1632,7 +1703,204 @@
     }
   }
 
+  // ── P&L privacy mode ─────────────────────────────────────────
+  function togglePnlPrivacy() {
+    const on = document.body.classList.toggle('hide-pnl');
+    document.getElementById('eye-toggle').setAttribute('aria-pressed', on);
+    try { localStorage.setItem('hidePnl', on ? '1' : ''); } catch (e) {}
+  }
+  try { if (localStorage.getItem('hidePnl')) {
+    document.body.classList.add('hide-pnl');
+    document.getElementById('eye-toggle').setAttribute('aria-pressed', 'true');
+  } } catch (e) {}
+
+  // ── Performance / calendar / insights (from /api/journal) ────
+  let _journalAt = 0, _journalTrades = null, _calSelDay = null;
+  const PERF_DAYS = 90;
+  const bkkDayStr  = ms => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(ms);
+  const bkkDowStr  = ms => new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Bangkok', weekday: 'short' }).format(ms);
+  const bkkHourNum = ms => +new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Bangkok', hour: 'numeric', hour12: false }).format(ms);
+
+  async function fetchJournal(force) {
+    if (!force && Date.now() - _journalAt < 5 * 60 * 1000) return;
+    try {
+      const j = await fetch('/api/journal').then(r => r.json());
+      if (!j || !Array.isArray(j.trades)) return;
+      _journalAt = Date.now();
+      _journalTrades = j.trades;
+      renderPerfSections();
+    } catch (e) { /* keep previous render */ }
+  }
+
+  function netOf(t) { return t.pnl - (t.profit_share || 0); }
+
+  function renderPerfSections() {
+    if (!_journalTrades || !_journalTrades.length) return;
+    const cutoff = Date.now() - PERF_DAYS * 864e5;
+    const ts = _journalTrades.filter(t => t.close_time_ms >= cutoff);
+    if (ts.length < 3) return;
+
+    // metrics
+    let net = 0, wins = 0, losses = 0, gw = 0, gl = 0, cum = 0, peak = 0, maxDD = 0;
+    let sw = 0, sl = 0, bw = 0, bl = 0, share = 0;
+    const byDay = new Map(), byDow = new Map(), bySym = new Map();
+    const holdW = [], holdL = [];
+    for (const t of ts) {
+      const p = netOf(t);
+      net += p; share += t.profit_share || 0;
+      if (p > 0.0001) { wins++; gw += p; sw++; sl = 0; if (sw > bw) bw = sw; }
+      else if (p < -0.0001) { losses++; gl += -p; sl++; sw = 0; if (sl > bl) bl = sl; }
+      const d = bkkDayStr(t.close_time_ms);
+      byDay.set(d, (byDay.get(d) || 0) + p);
+      const dw = bkkDowStr(t.close_time_ms);
+      const g1 = byDow.get(dw) || { net: 0, n: 0 }; g1.net += p; g1.n++; byDow.set(dw, g1);
+      const g2 = bySym.get(t.symbol) || { net: 0, n: 0 }; g2.net += p; g2.n++; bySym.set(t.symbol, g2);
+      if (t.open_time_ms > 0) (p >= 0 ? holdW : holdL).push((t.close_time_ms - t.open_time_ms) / 6e4);
+      cum += p; if (cum > peak) peak = cum;
+      if (peak - cum > maxDD) maxDD = peak - cum;
+    }
+    const winRate = wins + losses ? wins / (wins + losses) * 100 : 0;
+    const pf = gl > 0 ? gw / gl : (gw > 0 ? Infinity : 0);
+    const exp = net / ts.length;
+
+    // KPI cards
+    const card = (label, val, cls, sub) => `<div class="stat-card">
+      <div class="stat-label">${label}</div>
+      <div class="stat-val ${cls || ''}">${val}</div>
+      <div style="font-size:10px;color:var(--muted)">${sub || ''}</div></div>`;
+    document.getElementById('perf-cards').innerHTML =
+      card('Win Rate', winRate.toFixed(1) + '%', '', `${wins}W · ${losses}L`) +
+      card('Profit Factor', pf === Infinity ? '∞' : pf.toFixed(2),
+        pf >= 1.5 ? 'green' : pf < 1 ? 'red' : '',
+        pf === Infinity ? 'no losses' : pf >= 2 ? 'excellent' : pf >= 1.5 ? 'solid' : pf >= 1 ? 'thin edge' : 'losing') +
+      card('Expectancy', (exp >= 0 ? '+' : '−') + '$' + Math.abs(exp).toFixed(2),
+        colorClass(exp), 'per trade · net of share') +
+      card('Max Drawdown', maxDD > 0 ? '−$' + maxDD.toFixed(2) : '—',
+        maxDD > 0 ? 'red' : '', 'peak-to-trough');
+    const curStreak = sw ? sw + 'W' : sl ? sl + 'L' : '—';
+    document.getElementById('perf-streak').textContent =
+      `Current streak ${curStreak} · longest ${bw}W / ${bl}L` +
+      (share > 0 ? ` · profit share paid $${share.toFixed(2)}` : '');
+    document.getElementById('perf-section').style.display = 'block';
+
+    renderCalHeatmap(byDay);
+    renderInsights(ts, { byDow, bySym, share, gw, net, bl, holdW, holdL });
+  }
+
+  function renderCalHeatmap(byDay) {
+    const body = document.getElementById('cal-body');
+    const WEEKS = 16;
+    const today = new Date(bkkDayStr(Date.now()) + 'T12:00:00Z');
+    const start = new Date(today.getTime() - (WEEKS * 7 - 1) * 864e5);
+    start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7)); // back to Monday
+    const maxAbs = Math.max(...[...byDay.values()].map(Math.abs), 1e-9);
+    const green = cssVar('--green'), red = cssVar('--red');
+    const rgba = (hex, a) => {
+      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${a.toFixed(2)})`; };
+    const shade = v => rgba(v > 0 ? green : red, 0.18 + 0.82 * Math.pow(Math.min(1, Math.abs(v) / maxAbs), 0.5));
+    let cols = '', months = '', lastMonth = '';
+    for (let d = new Date(start); d <= today; ) {
+      let cells = '';
+      const mo = d.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+      const showMo = mo !== lastMonth && d.getUTCDate() <= 13;
+      if (showMo) lastMonth = mo;
+      months += `<span style="width:15px;${showMo ? 'min-width:15px;width:auto' : ''}">${showMo ? mo : ''}</span>`;
+      for (let r = 0; r < 7; r++) {
+        const ds = d.toISOString().slice(0, 10);
+        if (d > today) { cells += '<div class="cal-cell" style="opacity:0"></div>'; }
+        else {
+          const v = byDay.get(ds);
+          cells += v != null
+            ? `<div class="cal-cell has${_calSelDay === ds ? ' sel' : ''}" data-day="${ds}" role="button" tabindex="0"
+                 aria-label="${ds} ${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(2)}"></div>`
+            : '<div class="cal-cell"></div>';
+        }
+        d = new Date(d.getTime() + 864e5);
+      }
+      cols += `<div class="cal-col">${cells}</div>`;
+    }
+    body.innerHTML = `<div class="cal-scroll"><div style="display:inline-block">
+        <div class="cal-months" style="margin-left:20px">${months}</div>
+        <div class="cal-flex">
+          <div class="cal-side"><span>M</span><span></span><span>W</span><span></span><span>F</span><span></span><span>S</span></div>
+          <div class="cal-grid">${cols}</div>
+        </div></div></div>
+      <div class="cal-legend"><span>Loss</span>
+        <i style="background:${shade(-maxAbs)}"></i><i style="background:${shade(-maxAbs / 4)}"></i>
+        <i style="background:var(--border)"></i>
+        <i style="background:${shade(maxAbs / 4)}"></i><i style="background:${shade(maxAbs)}"></i>
+        <span>Gain</span></div>`;
+    // paint + wire cells (styles via JS so CSP-free inline colors stay minimal)
+    body.querySelectorAll('.cal-cell.has').forEach(c => {
+      const v = byDay.get(c.dataset.day);
+      c.style.background = shade(v);
+      const act = () => selectCalDay(c.dataset.day === _calSelDay ? null : c.dataset.day);
+      c.addEventListener('click', act);
+      c.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); } });
+    });
+    document.getElementById('cal-days-count').textContent = byDay.size + ' trading days';
+    document.getElementById('cal-section').style.display = 'block';
+    renderCalDayDetail();
+  }
+
+  function selectCalDay(day) {
+    _calSelDay = day;
+    document.querySelectorAll('.cal-cell.has').forEach(c =>
+      c.classList.toggle('sel', c.dataset.day === day));
+    renderCalDayDetail();
+  }
+
+  function renderCalDayDetail() {
+    const box = document.getElementById('cal-day-detail');
+    if (!_calSelDay || !_journalTrades) { box.style.display = 'none'; return; }
+    const dts = _journalTrades.filter(t => bkkDayStr(t.close_time_ms) === _calSelDay);
+    const net = dts.reduce((s, t) => s + netOf(t), 0);
+    const nice = new Date(_calSelDay + 'T12:00:00Z')
+      .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+    box.innerHTML = `<div class="cdd-head"><strong>${esc(nice)}</strong>
+        <span class="mono ${colorClass(net)}" style="font-weight:600">${fmt(net)}</span></div>` +
+      dts.map(t => `<div class="cdd-row">
+        <span>${esc(t.symbol)} <span class="side-badge ${esc(t.side)}" style="font-size:9px">${esc(t.side.toUpperCase())}</span>
+          <span style="font-size:9.5px">· ${esc(t.trader || '')}</span></span>
+        <span class="mono ${colorClass(netOf(t))}">${fmt(netOf(t))}</span></div>`).join('');
+    box.style.display = 'block';
+  }
+
+  function renderInsights(ts, agg) {
+    const out = [];
+    if (ts.length >= 10) {
+      let best = null, worst = null;
+      for (const [k, g] of agg.byDow) if (g.n >= 5) {
+        if (!best || g.net > best[1].net) best = [k, g];
+        if (!worst || g.net < worst[1].net) worst = [k, g];
+      }
+      if (best && best[1].net > 0) out.push(['📈', `Strongest weekday: <b>${esc(best[0])}</b> (${fmt(best[1].net)} over ${best[1].n} trades)`]);
+      if (worst && worst[1].net < 0 && (!best || worst[0] !== best[0]))
+        out.push(['📉', `Weakest weekday: <b>${esc(worst[0])}</b> (${fmt(worst[1].net)} over ${worst[1].n} trades)`]);
+    }
+    if (ts.length >= 6) {
+      const arr = [...agg.bySym.entries()].sort((a, b) => b[1].net - a[1].net);
+      const top = arr[0], bot = arr[arr.length - 1];
+      if (top && top[1].net > 0) out.push(['🏆', `<b>${esc(top[0])}</b> is the profit engine: ${fmt(top[1].net)} in ${top[1].n} trades`]);
+      if (bot && bot[1].net < 0 && bot[0] !== top[0]) out.push(['⚠️', `<b>${esc(bot[0])}</b> is the biggest drag: ${fmt(bot[1].net)} in ${bot[1].n} trades`]);
+    }
+    const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+    const hw = avg(agg.holdW), hl = avg(agg.holdL);
+    const hstr = m => m < 60 ? Math.round(m) + 'm' : m < 1440 ? (m / 60).toFixed(1) + 'h' : (m / 1440).toFixed(1) + 'd';
+    if (hw != null && hl != null && agg.holdW.length >= 5 && agg.holdL.length >= 5 && hl > hw * 1.6)
+      out.push(['⏳', `Losers are held <b>${(hl / hw).toFixed(1)}× longer</b> than winners (${hstr(hl)} vs ${hstr(hw)}) — letting losses run`]);
+    if (agg.share > 0 && agg.net + agg.share > 0)
+      out.push(['🤝', `Profit share paid: <b>$${agg.share.toFixed(2)}</b> — ${Math.round(agg.share / (agg.net + agg.share) * 100)}% of gross P&L`]);
+    if (agg.bl >= 3) out.push(['🧊', `Longest losing streak: <b>${agg.bl} trades</b>`]);
+    const box = document.getElementById('perf-insights');
+    box.innerHTML = out.slice(0, 4).map(([i, htm]) =>
+      `<div class="insight-row"><span class="ins-ico">${i}</span><div>${htm}</div></div>`).join('');
+    document.getElementById('insights-section').style.display = out.length ? 'block' : 'none';
+  }
+
   function refreshAll() {
+    fetchJournal();
     return Promise.allSettled([
       fetchData(), fetchTraders(), fetchInvestment(), fetchEarn(), fetchElite(), fetchEliteOverview(),
     ]);
