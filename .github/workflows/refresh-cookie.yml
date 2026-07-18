@@ -2,16 +2,19 @@ name: Refresh Bitget cookie
 
 # Silently renews the Bitget session cookie and pushes it to the tracker.
 # Runs on a schedule; if the silent refresh fails (session truly expired),
-# the job fails and GitHub emails you to run a full `npm run login` by hand.
+# the job fails and GitHub emails you to re-seed a fresh cookie by hand.
 
 on:
   schedule:
-    # Hourly, at :17 — an off-peak minute. GitHub silently skips or delays
-    # scheduled runs during load spikes (worst at :00), and a skipped run
-    # previously left a 6h gap in which the session died. With an hourly
-    # cadence a dropped run costs 1 hour, not 3-6. This is now a BACKUP:
-    # the tracker self-refreshes its cookie on every poll cycle.
-    - cron: '17 * * * *'
+    # Every 6h at :17 (00:17, 06:17, 12:17, 18:17 UTC). This is a BACKUP —
+    # the tracker's poller already self-refreshes the cookie on every poll
+    # cycle (browser_poller.py:_persist_refreshed_cookies), so a live session
+    # stays warm without this job. An hourly cadence added no real coverage
+    # and, once the session dies, emailed a failure EVERY hour. Six-hourly
+    # keeps the backup while cutting that alert spam ~6x. When it does fail,
+    # the session is genuinely expired and needs a manual re-login anyway —
+    # see the failure summary and RECOVERY.md.
+    - cron: '17 */6 * * *'
   workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
 
 concurrency:
@@ -47,3 +50,25 @@ jobs:
           TRACKER_URL: ${{ secrets.TRACKER_URL }}
           COOKIE_SYNC_TOKEN: ${{ secrets.COOKIE_SYNC_TOKEN }}
         run: node refresh-and-push.js
+
+      # When the silent refresh fails the session is genuinely dead — turn the
+      # generic red X into an actionable checklist right in the run summary.
+      - name: How to recover (manual re-login)
+        if: failure()
+        run: |
+          {
+            echo "## ⚠️ Bitget session needs a manual re-login"
+            echo ""
+            echo "The silent refresh failed, which almost always means the session fully"
+            echo "expired. Bitget periodically forces a phone-approved re-login, and no"
+            echo "automation can tap **Approve** in your Bitget app — so re-seed a fresh"
+            echo "cookie by hand (takes ~30 seconds):"
+            echo ""
+            echo "1. Open **bitget.com** in your browser, already logged in."
+            echo "2. Click the **copy-cookie bookmarklet** (see \`RECOVERY.md\`), *or*"
+            echo "   open DevTools → Console → run \`document.cookie\` → copy the string."
+            echo "3. Tracker dashboard → **Polling Setup** → paste → **Save**."
+            echo "4. Come back here → **Run workflow** to confirm it goes green."
+            echo ""
+            echo "Full instructions: [\`RECOVERY.md\`](../blob/master/RECOVERY.md)"
+          } >> "$GITHUB_STEP_SUMMARY"
