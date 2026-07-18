@@ -323,6 +323,16 @@ def _parse_trades(raw: Any) -> list[dict]:
             ct = int(ct_raw)
             if 0 < ct < 10_000_000_000:
                 ct *= 1000
+            ot_raw = (h.get("openTime") or h.get("openedAt") or
+                      h.get("openTs") or h.get("otime") or h.get("utime") or 0)
+            try:
+                ot = int(ot_raw)
+            except (TypeError, ValueError):
+                ot = 0
+            if 0 < ot < 10_000_000_000:
+                ot *= 1000
+            if ot > ct:
+                ot = 0  # bogus open time — drop rather than report negative hold
             out.append({
                 "time": _ms_to_bkk_datetime(ct),
                 "symbol": str(h.get("symbol") or h.get("symbolName") or h.get("instId") or ""),
@@ -337,6 +347,7 @@ def _parse_trades(raw: Any) -> list[dict]:
                 "profit_share": round(abs(_fv("profitShare", "profitShareAmount",
                                               "profitSharingAmount", "shareAmount", src=h)), 4),
                 "close_time_ms": ct,
+                "open_time_ms": ot,
             })
         except (TypeError, ValueError):
             continue
@@ -1113,6 +1124,32 @@ async def get_mt5_trades():
 @app.get("/api/mt5/history")
 async def get_mt5_history():
     return _mt5["history"] or []
+
+
+@app.get("/api/journal")
+async def get_journal():
+    """Everything the journal page needs in one call: all traders' closed
+    trades flattened (tagged with the trader name) + per-trader context."""
+    traders = []
+    trades = []
+    for name in _trader_names():
+        tc = _tc(name)
+        if tc["summary"] is None:
+            _rebuild_trader_summary(name)
+        s = tc["summary"] or {}
+        traders.append({
+            "name": name,
+            "type": s.get("type"),
+            "investment": s.get("investment", 0.0),
+            "balance": s.get("balance", 0.0),
+            "profit_share": s.get("profit_share", 0.0),
+            "all_time_pnl": s.get("all_time_pnl", 0.0),
+        })
+        for t in (tc["trades"] or []):
+            trades.append({**t, "trader": name})
+    trades.sort(key=lambda t: t["close_time_ms"])
+    return {"traders": traders, "trades": trades,
+            "generated_at": datetime.now(BKK).isoformat()}
 
 
 @app.get("/api/mt5/debug")
