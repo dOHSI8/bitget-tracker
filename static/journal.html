@@ -1108,6 +1108,8 @@ document.addEventListener('click',e=>{ if(!$('sym-dd').contains(e.target))$('sym
 /* view toggles */
 $('seg-theme').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return;
   setTheme(b.dataset.v); });
+$('seg-side').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return;
+  state.filters.side=b.dataset.v; persist(); renderAll(); });
 $('seg-basis').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return;
   state.view.basis=b.dataset.v; persist(); syncToggles(); renderAll(); });
 $('seg-unit').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return;
