@@ -17,7 +17,8 @@ function log(...args) {
 async function pushToTracker(kind, data) {
   try {
     const headers = { 'Content-Type': 'application/json' };
-    if (process.env.ADMIN_TOKEN) headers['X-Admin-Token'] = process.env.ADMIN_TOKEN;
+    const token = process.env.ADMIN_TOKEN || process.env.COOKIE_SYNC_TOKEN || '';
+    if (token) headers['X-Admin-Token'] = token;
     const res = await fetch(TRACKER_URL + '/api/push/mt5', {
       method: 'POST',
       headers,
