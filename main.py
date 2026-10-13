@@ -845,7 +845,9 @@ def _rebuild_summary() -> None:
         "daily_pnl": round(total_daily_pnl, 4),
         "open_positions": total_open_count,
         "open_positions_pnl": round(total_open_pnl, 4),
-        "all_time_pnl": round(total_all_time_pnl + cancelled_copy_pnl + elite_all_time_pnl, 4),
+        # Headline all-time P&L is balance-based (see _with_balance_pnl); this
+        # sum of per-copy trade results is kept only as a fallback/breakdown.
+        "trade_pnl": round(total_all_time_pnl + cancelled_copy_pnl + elite_all_time_pnl, 4),
         "active_trader_pnl": round(total_all_time_pnl, 4),
         "cancelled_copy_pnl": cancelled_copy_pnl,
         "cancelled_copy_count": cancelled_copy_count,
@@ -862,6 +864,28 @@ def _rebuild_summary() -> None:
         "MT5 rebuilt: traders=%d daily_pnl=%.4f all_time=%.4f balance=%.2f",
         len(_traders_list), total_daily_pnl, total_all_time_pnl, total_balance,
     )
+
+
+def _grand_total_balance(s: dict) -> float:
+    """Everything the account holds right now: copy-trading balance + Earn +
+    elite trader balance + elite overview equity (same parts as the dashboard)."""
+    earn_total  = (_earn["data"] or {}).get("total", 0.0) or 0.0
+    elite_total = (_elite["data"] or {}).get("balance", 0.0) or 0.0
+    eo = _elite_overview["data"] or {}
+    eo_total = float(eo.get("equity") or 0.0) if eo.get("active") else 0.0
+    return round(s["total_balance"] + earn_total + elite_total + eo_total, 2)
+
+
+def _with_balance_pnl(s: dict) -> dict:
+    """All-time P&L = current total balance − net invested (deposits −
+    withdrawals). Ignores per-copy trade history (stopped copies, profit
+    share, fees) — it is simply what the money has done. Falls back to the
+    trade-sum only while net invested is unknown."""
+    total = _grand_total_balance(s)
+    inv = s.get("total_investment") or 0.0
+    pnl = round(total - inv, 2) if inv > 0 else s.get("trade_pnl", 0.0)
+    return {**s, "grand_total_balance": total, "all_time_pnl": pnl,
+            "all_time_pnl_basis": "balance" if inv > 0 else "trades"}
 
 
 async def _refresh_investment() -> None:
@@ -1067,7 +1091,7 @@ async def push_mt5(request: Request):
 async def get_mt5():
     if not _mt5["summary"]:
         return {"available": False}
-    return {**_mt5["summary"], "available": True}
+    return {**_with_balance_pnl(_mt5["summary"]), "available": True}
 
 
 @app.get("/api/mt5/traders")
@@ -1242,16 +1266,14 @@ async def get_widget():
             stale = (datetime.now(BKK) - last).total_seconds() > 900
         except Exception:
             stale = False
-    # Include earn + elite balances so the widget matches the dashboard total
-    earn_total  = (_earn["data"] or {}).get("total", 0.0)
-    elite_total = (_elite["data"] or {}).get("balance", 0.0)
+    s = _with_balance_pnl(s)
     return {
         "daily_pnl": s["daily_pnl"],
         "daily_pnl_pct": 0.0,
         "open_positions": s["open_positions"],
         "open_positions_pnl": s["open_positions_pnl"],
         "all_time_pnl": s["all_time_pnl"],
-        "total_balance": round(s["total_balance"] + earn_total + elite_total, 2),
+        "total_balance": s["grand_total_balance"],
         "total_investment": s["total_investment"],
         "updated_at": pushed_at or datetime.now(BKK).strftime("%H:%M"),
         "stale": stale,

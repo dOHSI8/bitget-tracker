@@ -603,7 +603,7 @@
         <div class="stat-label">All-time</div>
         <div id="all-time-pnl" class="stat-val">—</div>
         <span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:nowrap">
-          <span id="alltime-badge" class="trend-badge flat" style="display:none" title="Realized P&L ÷ invested · closed trades only · excludes open positions"></span><span id="alltime-badge-label" style="display:none;font-size:9px;color:var(--muted);letter-spacing:0.3px;white-space:nowrap">invested return</span>
+          <span id="alltime-badge" class="trend-badge flat" style="display:none" title="(Total balance − net invested) ÷ net invested · includes open positions"></span><span id="alltime-badge-label" style="display:none;font-size:9px;color:var(--muted);letter-spacing:0.3px;white-space:nowrap">invested return</span>
         </span>
         <div id="cancelled-copies-note" style="display:none;font-size:9px;color:var(--muted);margin-top:3px;letter-spacing:0.3px"></div>
       </div>
@@ -1435,10 +1435,14 @@
   // Renders balance, return % and goal ring from the last mt5 summary plus
   // earn/elite totals. Called again by fetchEarn/fetchElite so the total
   // updates as soon as those arrive, not on the next 30s cycle.
+  function _displayBalance() {
+    const mt5 = _lastMt5 || {};
+    return (mt5.total_balance || 0) + _earnTotal + _eliteTotal + _eliteOverviewTotal;
+  }
   function renderBalance() {
     const mt5 = _lastMt5;
     if (!mt5) return 0;
-    const displayBalance = (mt5.total_balance || 0) + _earnTotal + _eliteTotal + _eliteOverviewTotal;
+    const displayBalance = _displayBalance();
     document.getElementById('total-balance').textContent = fmtBal(displayBalance);
     document.getElementById('total-investment').textContent = fmtBal(mt5.total_investment);
 
@@ -1561,11 +1565,16 @@
       pb.className = 'trend-badge ' + ((posCount > 0 || hasOpenPnl) ? 'up' : 'flat');
       pb.style.display = 'inline-flex';
 
+      // All-time = shown total balance − net invested (deposits − withdrawals),
+      // computed from the same numbers on screen so they always reconcile.
+      const atPnl = mt5.total_investment > 0
+        ? Math.round((_displayBalance() - mt5.total_investment) * 100) / 100
+        : mt5.all_time_pnl;
       const atEl = document.getElementById('all-time-pnl');
-      atEl.textContent = fmt(mt5.all_time_pnl);
-      atEl.className = 'stat-val ' + colorClass(mt5.all_time_pnl);
-      const atRet = (mt5.all_time_pnl != null && _base > 0)
-        ? mt5.all_time_pnl / _base * 100 : 0;
+      atEl.textContent = fmt(atPnl);
+      atEl.className = 'stat-val ' + colorClass(atPnl);
+      const atRet = (atPnl != null && _base > 0)
+        ? atPnl / _base * 100 : 0;
       if (Math.abs(atRet) >= 0.05) {
         const ab = document.getElementById('alltime-badge');
         ab.textContent = (atRet > 0 ? '↑ ' : '↓ ') + Math.abs(atRet).toFixed(1) + '%';
@@ -1580,12 +1589,8 @@
       const ccNote = document.getElementById('cancelled-copies-note');
       const ccPnl = mt5.cancelled_copy_pnl;
       const ccCount = mt5.cancelled_copy_count;
-      if (ccPnl != null && Math.abs(ccPnl) >= 0.01) {
-        ccNote.textContent = 'incl. PL from stopped copies';
-        ccNote.style.display = '';
-      } else {
-        ccNote.style.display = 'none';
-      }
+      ccNote.textContent = 'balance − net invested';
+      ccNote.style.display = mt5.total_investment > 0 ? '' : 'none';
 
       // Stopped copies card — always visible so user can tap to enter value
       document.getElementById('stopped-copies-section').style.display = 'block';
