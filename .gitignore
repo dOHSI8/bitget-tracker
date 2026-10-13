@@ -8,3 +8,6 @@ headless/browser-data/
 headless/node_modules/
 headless/.env
 headless/data/
+traders.json
+history.json
+credentials.json

@@ -3,6 +3,7 @@ services:
     name: bitget-tracker
     runtime: docker
     plan: free
+    healthCheckPath: /healthz
     envVars:
       - key: PORT
         value: "10000"
@@ -12,3 +13,6 @@ services:
         value: "TraderName:YOUR_PORTFOLIO_ID"
       - key: POLL_INTERVAL_SEC
         value: "30"
+      - key: ADMIN_TOKEN
+        # Protects write endpoints. Set a long random value in the dashboard.
+        sync: false

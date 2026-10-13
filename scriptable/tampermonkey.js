@@ -18,13 +18,16 @@
 
   // ── CONFIG ─────────────────────────────────────────────────────────────────
   const TRACKER_URL = 'https://YOUR-SERVICE-NAME.onrender.com';
+  const ADMIN_TOKEN = '';  // set to the server's ADMIN_TOKEN if it has one
 
   // ── Push to tracker ────────────────────────────────────────────────────────
   function pushToTracker(kind, data) {
     GM_xmlhttpRequest({
       method: 'POST',
       url: TRACKER_URL + '/api/push/mt5',
-      headers: { 'Content-Type': 'application/json' },
+      headers: ADMIN_TOKEN
+        ? { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN }
+        : { 'Content-Type': 'application/json' },
       data: JSON.stringify({ kind, data }),
       onerror: (e) => console.warn('[Bitget Tracker] push failed', e),
     });

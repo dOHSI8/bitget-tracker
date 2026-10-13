@@ -7,3 +7,6 @@ cookies.json
 headless/node_modules
 headless/browser-data
 .venv
+traders.json
+history.json
+credentials.json

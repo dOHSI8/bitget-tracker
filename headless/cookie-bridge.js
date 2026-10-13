@@ -50,11 +50,15 @@ async function pullCookieFromTracker(trackerUrl, token) {
     return body.cookie;
 }
 
-/** Push a cookie string to the tracker (open POST, same as the dashboard). */
+/** Push a cookie string to the tracker. Sends COOKIE_SYNC_TOKEN (or
+ *  ADMIN_TOKEN) when set — required once the tracker has ADMIN_TOKEN. */
 async function pushCookieToTracker(trackerUrl, cookieStr) {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = process.env.COOKIE_SYNC_TOKEN || process.env.ADMIN_TOKEN || '';
+    if (token) headers['X-Admin-Token'] = token;
     const res = await fetch(`${trackerUrl}/api/poller/cookie`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ cookie: cookieStr }),
     });
     if (!res.ok) {

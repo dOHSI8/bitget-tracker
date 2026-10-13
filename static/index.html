@@ -935,6 +935,39 @@
 </div>
 
 <script>
+  // ── Admin token ───────────────────────────────────────────────
+  // When the server has ADMIN_TOKEN set, writes (cookie, credentials, traders,
+  // settings) need X-Admin-Token. Wrap fetch so every existing call site gets
+  // it for free: attach the saved token, and on 401 ask once and retry.
+  const ADMIN_TOKEN_KEY = 'bitget_admin_token';
+  (function () {
+    const origFetch = window.fetch.bind(window);
+    const getToken = () => { try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch (e) { return ''; } };
+    const setToken = t => { try { t ? localStorage.setItem(ADMIN_TOKEN_KEY, t) : localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (e) {} };
+    const needsToken = (url, method) => {
+      if (typeof url !== 'string' || !url.startsWith('/api/')) return false;
+      return method !== 'GET' || url.startsWith('/api/poller/test');
+    };
+    const withToken = (init, token) => {
+      const headers = new Headers((init && init.headers) || {});
+      if (token) headers.set('X-Admin-Token', token);
+      return { ...(init || {}), headers };
+    };
+    window.fetch = async function (url, init) {
+      const method = ((init && init.method) || 'GET').toUpperCase();
+      if (!needsToken(url, method)) return origFetch(url, init);
+      let res = await origFetch(url, withToken(init, getToken()));
+      if (res.status === 401) {
+        const t = prompt('Admin token required to save changes (set as ADMIN_TOKEN on the server):');
+        if (!t) return res;
+        setToken(t.trim());
+        res = await origFetch(url, withToken(init, t.trim()));
+        if (res.status === 401) { setToken(''); alert('Admin token rejected.'); }
+      }
+      return res;
+    };
+  })();
+
   // ── Theme ─────────────────────────────────────────────────────
   const THEME_KEY = 'bitget_theme';
   function applyTheme(theme) {

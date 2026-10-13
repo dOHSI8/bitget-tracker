@@ -16,9 +16,11 @@ function log(...args) {
 
 async function pushToTracker(kind, data) {
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.ADMIN_TOKEN) headers['X-Admin-Token'] = process.env.ADMIN_TOKEN;
     const res = await fetch(TRACKER_URL + '/api/push/mt5', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ kind, data }),
     });
     if (!res.ok) log('push failed:', res.status);
