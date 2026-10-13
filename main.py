@@ -18,6 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
+from storage import atomic_write_json
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
@@ -78,7 +80,7 @@ def _load_traders_list() -> list[dict]:
 
 
 def _save_traders_list(traders: list[dict]) -> None:
-    TRADERS_FILE.write_text(json.dumps({"traders": traders}))
+    atomic_write_json(TRADERS_FILE, {"traders": traders})
 
 
 # Module-level mutable list — the single source of truth for main.py
@@ -102,9 +104,6 @@ def _trader_type(name: str) -> str:
 
 _DEFAULT_TRADER = _traders_list[0]["name"] if _traders_list else "DKTrading"
 
-_BALANCE_PATS = ("balance", "equity", "totalbal", "totalequity",
-                 "totalasset", "accountval", "worth", "asset")
-
 
 def _load_settings() -> dict:
     if SETTINGS_FILE.exists():
@@ -120,7 +119,7 @@ def _load_settings() -> dict:
 
 
 def _save_settings(s: dict) -> None:
-    SETTINGS_FILE.write_text(json.dumps(s))
+    atomic_write_json(SETTINGS_FILE, s)
 
 
 _settings = _load_settings()
@@ -148,7 +147,7 @@ def _save_history(trader: str, rows: list) -> None:
             except (json.JSONDecodeError, OSError):
                 pass
         data[trader] = rows
-        HISTORY_FILE.write_text(json.dumps(data))
+        atomic_write_json(HISTORY_FILE, data)
     except OSError as e:
         logger.warning("Could not save history.json: %s", e)
 
@@ -960,11 +959,15 @@ async def lifespan(app: FastAPI):
     env_cookie = os.environ.get("BITGET_COOKIE", "")
     cookie_path = Path(os.environ.get("COOKIES_PATH", "cookies.json"))
     if env_cookie and not cookie_path.exists():
-        cookie_path.write_text(json.dumps({
+        atomic_write_json(cookie_path, {
             "cookie": env_cookie,
             "updated": "from-env-var",
-        }))
+        }, private=True)
         logger.info("Restored cookie from BITGET_COOKIE env var (%d chars)", len(env_cookie))
+
+    if not _auth_required():
+        logger.warning("ADMIN_TOKEN is not set — write endpoints (cookie, "
+                       "credentials, traders, push) are open to anyone with the URL")
 
     from browser_poller import start_poller
     task = asyncio.create_task(start_poller(_push_data))
@@ -993,7 +996,65 @@ app.add_middleware(
 )
 
 
+# ── Write protection ──────────────────────────────────────────────────────────
+# The Render URL is public, so without this anyone who finds it can replace the
+# Bitget cookie, overwrite API credentials, delete traders or push fake trades.
+# Opt-in: set ADMIN_TOKEN and every mutating /api call (plus the Chromium-
+# launching cookie test) must send it as X-Admin-Token. COOKIE_SYNC_TOKEN is
+# accepted too, so the headless cookie refresher keeps working with the single
+# secret it already has. Reads stay open — the iPhone widget needs no token.
+
+_GUARDED_GET_PATHS = {"/api/poller/test"}
+
+
+def _write_tokens() -> list[str]:
+    return [t for t in (os.environ.get("ADMIN_TOKEN", ""),
+                        os.environ.get("COOKIE_SYNC_TOKEN", "")) if t]
+
+
+def _auth_required() -> bool:
+    return bool(os.environ.get("ADMIN_TOKEN", ""))
+
+
+def _is_guarded(method: str, path: str) -> bool:
+    if not path.startswith("/api/"):
+        return False
+    if method in ("POST", "PUT", "PATCH", "DELETE"):
+        return True
+    return method == "GET" and path in _GUARDED_GET_PATHS
+
+
+@app.middleware("http")
+async def require_admin_token(request: Request, call_next):
+    if _auth_required() and _is_guarded(request.method, request.url.path):
+        provided = (request.headers.get("x-admin-token")
+                    or request.headers.get("x-sync-token") or "")
+        if not any(_constant_time_eq(provided, t) for t in _write_tokens()):
+            return JSONResponse({"ok": False, "error": "unauthorized",
+                                 "auth_required": True}, status_code=401)
+    return await call_next(request)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.get("/healthz")
+async def healthz():
+    """Tiny keep-alive target for UptimeRobot — pinging "/" serves the whole
+    dashboard HTML every 10 min, which adds up on Render's metered egress."""
+    from browser_poller import get_status
+    st = get_status()
+    return {"ok": True, "last_poll": st.get("last_poll"),
+            "pushed_at": _mt5.get("pushed_at")}
+
+
+@app.get("/api/auth")
+async def auth_status(request: Request):
+    """Lets the dashboard know whether writes need a token, and whether the
+    one it holds is valid (so it can prompt before a save fails)."""
+    provided = request.headers.get("x-admin-token") or ""
+    valid = (not _auth_required()) or any(
+        _constant_time_eq(provided, t) for t in _write_tokens())
+    return {"auth_required": _auth_required(), "token_valid": valid}
 
 @app.post("/api/push/mt5")
 async def push_mt5(request: Request):
@@ -1416,12 +1477,12 @@ async def save_credentials(request: Request):
     passphrase = body.get("passphrase", "").strip()
     if not api_key or not secret or not passphrase:
         return {"ok": False, "error": "api_key, secret and passphrase are all required"}
-    CREDENTIALS_FILE.write_text(json.dumps({
+    atomic_write_json(CREDENTIALS_FILE, {
         "api_key": api_key,
         "secret": secret,
         "passphrase": passphrase,
         "updated": datetime.now(BKK).isoformat(),
-    }))
+    }, private=True)
     logger.info("API credentials saved")
     asyncio.create_task(_refresh_investment())
     asyncio.create_task(_refresh_earn())
@@ -1500,7 +1561,7 @@ async def set_poller_cookie(request: Request):
                     len(cookie), len(local_storage))
     else:
         logger.info("Poller cookie updated (%d chars)", len(cookie))
-    COOKIES_FILE.write_text(json.dumps(payload))
+    atomic_write_json(COOKIES_FILE, payload, private=True)
     from browser_poller import reset_auth_status
     reset_auth_status()
     return {"ok": True, "length": len(cookie)}

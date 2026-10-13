@@ -7,6 +7,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable
 
+from storage import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 BKK = timezone(timedelta(hours=7))
@@ -313,7 +315,7 @@ async def _persist_refreshed_cookies(context) -> None:
         return  # nothing changed
     payload["cookie"] = new_str
     payload["self_refreshed_at"] = datetime.now(BKK).isoformat()
-    COOKIES_FILE.write_text(json.dumps(payload))
+    atomic_write_json(COOKIES_FILE, payload, private=True)
     logger.info("Self-refreshed cookie persisted (%d chars)", len(new_str))
 
 

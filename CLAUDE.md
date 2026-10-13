@@ -56,7 +56,15 @@ _mt5:      positions_raw, history_raw, summary, pushed_at
 _settings: balance, investment, all_time_pnl, realized_pnl
 ```
 
+## Write protection
+Set `ADMIN_TOKEN` on Render → every POST/PUT/PATCH/DELETE under `/api/` (and `GET /api/poller/test`) needs header `X-Admin-Token` (`COOKIE_SYNC_TOKEN` also accepted, so the headless cookie bridge keeps working). Unset = open, with a startup warning. Reads (`/api/widget`, `/api/journal`…) stay open. The dashboard wraps `fetch` and prompts once, storing the token in localStorage `bitget_admin_token`.
+
+## Persistence & tests
+All JSON state files are written through `storage.atomic_write_json` (temp file + rename; cookies/credentials chmod 600). Tests: `python -m pytest` (in `tests/`, no Playwright needed; CI in `.github/workflows/tests.yml`).
+
 ## Useful endpoints
+- `/healthz` — tiny keep-alive for UptimeRobot / Render health check (don't ping `/`, it serves the full dashboard)
+- `/api/auth` — `{auth_required, token_valid}` for the X-Admin-Token sent
 - `/api/widget` — widget data (balance, pnl, stale flag)
 - `/api/poller` — scraper status (last_poll, pushes, cookie health, probe results)
 - `/api/mt5/debug` — raw cached data

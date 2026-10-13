@@ -93,6 +93,7 @@ Note each `portfolioId` and the trader name you're copying.
 | Variable | Value | Required |
 |----------|-------|----------|
 | `TRADERS` | `TraderName:portfolioId` | **Yes** |
+| `ADMIN_TOKEN` | long random secret | **Strongly recommended** — without it anyone with your URL can replace your cookie, credentials or traders. The dashboard asks for it once per device. |
 | `COOKIE_SYNC_TOKEN` | random secret (see Step 5) | No (enables auto-refresh) |
 | `POLL_INTERVAL_SEC` | `30` | No (default: 30 s) |
 | `BITGET_API_KEY` | your Bitget API key | No (earn/deposits only) |
@@ -165,7 +166,7 @@ Render's free tier puts your service to sleep after 15 minutes with no traffic.
 
 1. Sign up at [uptimerobot.com](https://uptimerobot.com) (free)
 2. **New Monitor → HTTP(s)**
-3. URL: `https://YOUR-SERVICE-NAME.onrender.com/api/poller`
+3. URL: `https://YOUR-SERVICE-NAME.onrender.com/healthz` (tiny response — saves egress)
 4. Interval: **every 5 minutes**
 
 ---
