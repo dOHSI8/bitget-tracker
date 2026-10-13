@@ -550,6 +550,7 @@
               <div class="inv-api-item">
                 <div class="inv-api-label">Deposits</div>
                 <div class="inv-api-val green" id="inv-deposits">—</div>
+                <div style="font-size:9px;color:var(--muted)" id="inv-deposits-note"></div>
               </div>
               <div class="inv-api-item">
                 <div class="inv-api-label">Withdrawals</div>
@@ -1254,6 +1255,11 @@
       const badge = document.getElementById('inv-api-badge');
       if (inv.net != null) {
         document.getElementById('inv-deposits').textContent    = '$' + (inv.deposits || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+        // Non-stablecoin deposits (e.g. ETH) are valued at the price when credited
+        const other = (inv.other_deposits || []).map(d =>
+          d.usd != null ? `${d.qty} ${d.coin} ≈ $${d.usd.toFixed(2)}` : `${d.qty} ${d.coin} (price unavailable)`);
+        document.getElementById('inv-deposits').title = other.length ? 'Includes ' + other.join(', ') : '';
+        document.getElementById('inv-deposits-note').textContent = other.length ? 'incl. ' + other.join(', ') : '';
         document.getElementById('inv-withdrawals').textContent = '$' + (inv.withdrawals || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
         document.getElementById('inv-net').textContent         = '$' + (inv.net || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
         if (inv.fetched_at) {
