@@ -56,6 +56,9 @@ _mt5:      positions_raw, history_raw, summary, pushed_at
 _settings: balance, investment, all_time_pnl, realized_pnl
 ```
 
+## Invested cost
+`bitget_api.fetch_net_investment` = USDT+USDC deposits − withdrawals, **plus** non-stablecoin deposits (e.g. ETH) valued at the 1-min `<COIN>USDT` close when credited (public `/api/v2/spot/market/history-candles`). Exposed as `other_deposits` / `other_deposits_usd` in `/api/investment`; unpriced ones are logged and left out.
+
 ## Write protection
 Set `ADMIN_TOKEN` on Render → every POST/PUT/PATCH/DELETE under `/api/` (and `GET /api/poller/test`) needs header `X-Admin-Token` (`COOKIE_SYNC_TOKEN` also accepted, so the headless cookie bridge keeps working). Unset = open, with a startup warning. Reads (`/api/widget`, `/api/journal`…) stay open. The dashboard wraps `fetch` and prompts once, storing the token in localStorage `bitget_admin_token`.
 
