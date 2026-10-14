@@ -144,8 +144,57 @@ async def _get_windowed(client: httpx.AsyncClient, path: str, base_params: dict,
     return all_rows, combined
 
 
+async def _usdt_price_at(client: httpx.AsyncClient, coin: str, ts_ms: int) -> float | None:
+    """Close of the 1-minute <coin>USDT spot candle at ts_ms (public, no auth).
+
+    Used to value non-stablecoin deposits (e.g. ETH) at the moment they were
+    credited, so they count toward invested cost like USDT/USDC do.
+    """
+    try:
+        r = await client.get(
+            f"{BITGET_API_BASE}/api/v2/spot/market/history-candles",
+            params={"symbol": f"{coin.upper()}USDT", "granularity": "1min",
+                    "endTime": str(ts_ms + 60_000), "limit": "1"},
+        )
+        rows = (r.json() or {}).get("data") or []
+        if rows:
+            return float(rows[-1][4])  # [ts, open, high, low, close, ...]
+    except Exception as e:  # noqa: BLE001 — price lookup is best-effort
+        logger.warning("price lookup %sUSDT@%s failed: %s", coin, ts_ms, e)
+    return None
+
+
+async def _value_other_deposits(client: httpx.AsyncClient, rows: list[dict]) -> list[dict]:
+    """Value successful non-stablecoin deposits in USDT at their credit time."""
+    async def one(r: dict) -> dict:
+        coin = str(r.get("coin", "")).upper()
+        ts = int(r.get("uTime") or r.get("cTime") or 0)
+        qty = _row_amount(r)
+        price = await _usdt_price_at(client, coin, ts) if ts else None
+        return {"coin": coin, "qty": qty, "time_ms": ts, "price": price,
+                "usd": round(qty * price, 2) if price is not None else None}
+    return list(await asyncio.gather(*(one(r) for r in rows)))
+
+
+def _involves_account(row: dict, accounts: set[str]) -> bool:
+    """True if any field of a transfer record names one of `accounts`.
+
+    Internal transfers carry the counterparty UID in toAddress/fromAddress
+    (field use varies by record type), so match on every value rather than
+    guess one field."""
+    return any(str(v).strip() in accounts for v in row.values()
+               if isinstance(v, (str, int)))
+
+
+def _excluded_summary(row: dict, kind: str) -> dict:
+    return {"type": kind, "coin": str(row.get("coin", "")), "qty": _row_amount(row),
+            "time_ms": int(row.get("uTime") or row.get("cTime") or 0),
+            "status": str(row.get("status", ""))}
+
+
 async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
-                                coins: list[str] | None = None) -> dict:
+                                coins: list[str] | None = None,
+                                exclude_accounts: set[str] | None = None) -> dict:
     """
     Return net investment = total deposits - total withdrawals across all requested coins.
 
@@ -208,6 +257,18 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
                 api_key, secret, passphrase, start_ms, now_ms,
             )
 
+    # Drop transfers to/from excluded accounts (e.g. the user's own other
+    # account) — they move money around but aren't investment in or out.
+    excluded: list[dict] = []
+    if exclude_accounts:
+        keep_dep = [r for r in deposits_all if not _involves_account(r, exclude_accounts)]
+        keep_wdw = [r for r in withdrawals if not _involves_account(r, exclude_accounts)]
+        excluded = ([_excluded_summary(r, "deposit") for r in deposits_all if r not in keep_dep]
+                    + [_excluded_summary(r, "withdrawal") for r in withdrawals if r not in keep_wdw])
+        deposits_all, withdrawals = keep_dep, keep_wdw
+        if excluded:
+            logger.info("Excluded %d transfer(s) involving %s", len(excluded), sorted(exclude_accounts))
+
     dep_source = "deposit-records"
     dep_all_coins = list({str(r.get("coin", "")) for r in deposits_all})
 
@@ -219,16 +280,31 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
         dep_success_count = len(bills_rows)
         dep_sample = bills_rows[:3]
         dep_statuses: list = []
+        other_success = []
     else:
         # Prefix match: catches USDT-TRC20, USDT-ERC20, USDC-ERC20 etc.
         deposits_filtered = [r for r in deposits_all
                               if any(str(r.get("coin", "")).upper().startswith(c) for c in coins)]
         dep_success = [r for r in deposits_filtered if _is_success(r)]
         dep_total = sum(_row_amount(r) for r in dep_success)
+        other_success = [r for r in deposits_all if _is_success(r) and r not in deposits_filtered]
         deposits_for_count = deposits_filtered
         dep_success_count = len(dep_success)
         dep_sample = deposits_all[:3]
         dep_statuses = list({str(r.get("status", "")) for r in deposits_filtered})
+
+    # Non-stablecoin deposits (ETH etc.) were traded with too, so they are part
+    # of invested cost — valued at the USDT price when they were credited.
+    other_deposits: list[dict] = []
+    if other_success:
+        async with httpx.AsyncClient(timeout=30) as client:
+            other_deposits = await _value_other_deposits(client, other_success)
+    other_total = sum(d["usd"] for d in other_deposits if d["usd"] is not None)
+    unpriced = [d for d in other_deposits if d["usd"] is None]
+    if unpriced:
+        logger.warning("Could not price %d non-stablecoin deposit(s): %s",
+                       len(unpriced), [f"{d['qty']} {d['coin']}" for d in unpriced])
+    dep_total += other_total
 
     wdw_success = [r for r in withdrawals if _is_success(r)]
     wdw_total = sum(_row_amount(r) for r in wdw_success)
@@ -245,9 +321,12 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
         "deposits": round(dep_total, 2),
         "withdrawals": round(wdw_total, 2),
         "net": round(dep_total - wdw_total, 2),
-        "deposit_count": len(deposits_for_count),
+        "deposit_count": len(deposits_for_count) + len(other_deposits),
+        "other_deposits": other_deposits,
+        "excluded_transfers": excluded,
+        "other_deposits_usd": round(other_total, 2),
         "withdrawal_count": len(withdrawals),
-        "deposit_success_count": dep_success_count,
+        "deposit_success_count": dep_success_count + len(other_deposits),
         "withdrawal_success_count": len(wdw_success),
         "coins": coins,
         "coin": "+".join(coins),
