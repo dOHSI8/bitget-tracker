@@ -559,6 +559,7 @@
               <div class="inv-api-item">
                 <div class="inv-api-label">Net invested</div>
                 <div class="inv-api-val" id="inv-net">—</div>
+                <div style="font-size:9px;color:var(--muted)" id="inv-net-note"></div>
               </div>
             </div>
           </div>
@@ -1260,6 +1261,12 @@
           d.usd != null ? `${d.qty} ${d.coin} ≈ $${d.usd.toFixed(2)}` : `${d.qty} ${d.coin} (price unavailable)`);
         document.getElementById('inv-deposits').title = other.length ? 'Includes ' + other.join(', ') : '';
         document.getElementById('inv-deposits-note').textContent = other.length ? 'incl. ' + other.join(', ') : '';
+        // Transfers with excluded accounts (EXCLUDE_TRANSFER_ACCOUNTS) are left out
+        const exc = inv.excluded_transfers || [];
+        document.getElementById('inv-net-note').textContent = exc.length
+          ? `excl. ${exc.length} transfer${exc.length === 1 ? '' : 's'} with own accounts` : '';
+        document.getElementById('inv-net').title = exc.map(e =>
+          `${e.type} ${e.qty} ${e.coin} · ${new Date(e.time_ms).toLocaleDateString()}`).join('\n');
         document.getElementById('inv-withdrawals').textContent = '$' + (inv.withdrawals || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
         document.getElementById('inv-net').textContent         = '$' + (inv.net || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
         if (inv.fetched_at) {

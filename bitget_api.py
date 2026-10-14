@@ -176,8 +176,25 @@ async def _value_other_deposits(client: httpx.AsyncClient, rows: list[dict]) -> 
     return list(await asyncio.gather(*(one(r) for r in rows)))
 
 
+def _involves_account(row: dict, accounts: set[str]) -> bool:
+    """True if any field of a transfer record names one of `accounts`.
+
+    Internal transfers carry the counterparty UID in toAddress/fromAddress
+    (field use varies by record type), so match on every value rather than
+    guess one field."""
+    return any(str(v).strip() in accounts for v in row.values()
+               if isinstance(v, (str, int)))
+
+
+def _excluded_summary(row: dict, kind: str) -> dict:
+    return {"type": kind, "coin": str(row.get("coin", "")), "qty": _row_amount(row),
+            "time_ms": int(row.get("uTime") or row.get("cTime") or 0),
+            "status": str(row.get("status", ""))}
+
+
 async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
-                                coins: list[str] | None = None) -> dict:
+                                coins: list[str] | None = None,
+                                exclude_accounts: set[str] | None = None) -> dict:
     """
     Return net investment = total deposits - total withdrawals across all requested coins.
 
@@ -240,6 +257,18 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
                 api_key, secret, passphrase, start_ms, now_ms,
             )
 
+    # Drop transfers to/from excluded accounts (e.g. the user's own other
+    # account) — they move money around but aren't investment in or out.
+    excluded: list[dict] = []
+    if exclude_accounts:
+        keep_dep = [r for r in deposits_all if not _involves_account(r, exclude_accounts)]
+        keep_wdw = [r for r in withdrawals if not _involves_account(r, exclude_accounts)]
+        excluded = ([_excluded_summary(r, "deposit") for r in deposits_all if r not in keep_dep]
+                    + [_excluded_summary(r, "withdrawal") for r in withdrawals if r not in keep_wdw])
+        deposits_all, withdrawals = keep_dep, keep_wdw
+        if excluded:
+            logger.info("Excluded %d transfer(s) involving %s", len(excluded), sorted(exclude_accounts))
+
     dep_source = "deposit-records"
     dep_all_coins = list({str(r.get("coin", "")) for r in deposits_all})
 
@@ -294,6 +323,7 @@ async def fetch_net_investment(api_key: str, secret: str, passphrase: str,
         "net": round(dep_total - wdw_total, 2),
         "deposit_count": len(deposits_for_count) + len(other_deposits),
         "other_deposits": other_deposits,
+        "excluded_transfers": excluded,
         "other_deposits_usd": round(other_total, 2),
         "withdrawal_count": len(withdrawals),
         "deposit_success_count": dep_success_count + len(other_deposits),

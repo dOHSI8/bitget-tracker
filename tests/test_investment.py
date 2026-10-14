@@ -42,3 +42,23 @@ def test_unpriced_deposit_is_reported_not_counted(monkeypatch):
     r = asyncio.run(bitget_api.fetch_net_investment("k", "s", "p", coins=["USDT"]))
     assert r["deposits"] == 10.0
     assert r["other_deposits"][0]["usd"] is None
+
+
+def test_transfers_with_excluded_account_are_dropped(monkeypatch):
+    own = "5373675007"
+    deposits = [_row("USDT", 100), {**_row("USDT", 400), "dest": "internal_transfer", "fromAddress": own}]
+    withdrawals = [_row("USDT", 30), {**_row("USDT", 108.5), "toAddress": own}]
+
+    async def fake_windowed(client, path, params, *a, **k):
+        if "deposit" in path:
+            return deposits, {}
+        return (withdrawals if params.get("coin") == "USDT" else []), {}
+
+    monkeypatch.setattr(bitget_api, "_get_windowed", fake_windowed)
+    r = asyncio.run(bitget_api.fetch_net_investment("k", "s", "p", coins=["USDT"],
+                                                    exclude_accounts={own}))
+    assert (r["deposits"], r["withdrawals"], r["net"]) == (100.0, 30.0, 70.0)
+    assert sorted(e["qty"] for e in r["excluded_transfers"]) == [108.5, 400.0]
+    # without the setting nothing is dropped
+    r2 = asyncio.run(bitget_api.fetch_net_investment("k", "s", "p", coins=["USDT"]))
+    assert r2["net"] == 361.5 and r2["excluded_transfers"] == []

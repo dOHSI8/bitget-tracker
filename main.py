@@ -888,6 +888,13 @@ def _with_balance_pnl(s: dict) -> dict:
             "all_time_pnl_basis": "balance" if inv > 0 else "trades"}
 
 
+def _excluded_accounts() -> set[str]:
+    """Bitget UIDs whose transfers in/out don't count as investment — set as
+    EXCLUDE_TRANSFER_ACCOUNTS (comma-separated) on Render."""
+    raw = os.environ.get("EXCLUDE_TRANSFER_ACCOUNTS", "")
+    return {a.strip() for a in raw.split(",") if a.strip()}
+
+
 async def _refresh_investment() -> None:
     global _investment
     creds = _load_credentials()
@@ -898,6 +905,7 @@ async def _refresh_investment() -> None:
         result = await fetch_net_investment(
             creds["api_key"], creds["secret"], creds["passphrase"],
             coins=["USDT", "USDC"],
+            exclude_accounts=_excluded_accounts(),
         )
         _investment["data"] = result
         _investment["fetched_at"] = datetime.now(BKK).isoformat()
